@@ -558,7 +558,21 @@ class YuE2StudioContractTests(unittest.TestCase):
         app = (Path(__file__).resolve().parents[2] / "src" / "App.tsx").read_text(encoding="utf-8")
         reuse = app.split("function reuseSong", 1)[1].split("async function saveSongDetails", 1)[0]
         self.assertIn('setLockedSeed("")', reuse)
+        self.assertIn('setCreateMode("custom")', reuse)
+        self.assertIn('setStudioView("create")', reuse)
         self.assertNotIn("setLockedSeed(String(song.seed))", reuse)
+
+    def test_easy_make_another_writes_fresh_style_and_lyrics_with_a_random_seed(self):
+        app = (Path(__file__).resolve().parents[2] / "src" / "App.tsx").read_text(encoding="utf-8")
+        rerun = app.split("async function rerunEasySong", 1)[1].split("// Easy mode:", 1)[0]
+        self.assertIn('action: "describe"', rerun)
+        self.assertIn("setChatStyle(caption)", rerun)
+        self.assertIn('action: "generate"', rerun)
+        self.assertIn("random: true", rerun)
+        self.assertIn("description: caption", rerun)
+        self.assertIn("setChatLyrics(written)", rerun)
+        self.assertIn("seed: null", rerun)
+        self.assertNotIn("chatLyrics || lyrics", rerun)
 
     def test_remix_menu_has_obvious_choices_and_limitation_tooltip(self):
         root = Path(__file__).resolve().parents[2]

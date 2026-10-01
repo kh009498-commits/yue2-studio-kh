@@ -75,6 +75,8 @@ python/woosh_runtime/
 python/vendor/Woosh/
 
 YuE2 Studio Updated.exe
+YuE2 Studio.old.exe
+*.lnk
 python/model_install_tools/
 python/managed/
 python/_tmp_*.py

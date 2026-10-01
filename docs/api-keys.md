@@ -16,11 +16,19 @@ The first **Generate Lyrics** / **Optimize** click turns Writing Enable on so a 
 
 Between LOGS and SYSTEM. Groups:
 
-1. **Writing** — titles and lyrics (Gemini 3.6 Flash default, or Grok / Groq / OpenAI / Anthropic / Local LLM)
+1. **Writing** — titles and lyrics (Gemini 3.6 Flash default, or NVIDIA NIM / Grok / Groq / OpenAI / Anthropic / Local LLM)
 2. **Still images** — 1:1 square covers only. Default remains local SD 1.5
 3. **Motion / video** — 16:9 landscape or 9:16 portrait. Default remains local Video Studio
 
 Saving a Gemini key does not replace local YuE2. It never generates the song. To replace a previously saved cloud key, paste the intended key into the field and click **Save this category**; selecting a provider or model alone does not replace an existing key.
+
+## Writing models
+
+Keys → Writing lists the chosen provider's current writing models, with recommended choices first and an option to type a model ID. Switching providers resets the model instead of carrying another provider's ID across. Blank IDs use that provider's default. NVIDIA NIM defaults to `deepseek-ai/deepseek-v4.1-flash`; the retired `minimaxai/minimax-m3` choice migrates to that default. Custom IDs are preserved except known defaults inherited from a different provider.
+
+Writing helpers generate text only. YuE2 generates all song audio locally; there is no MiniMax music fallback. A provider error is reported rather than sending the request to another provider. Available models and provider pricing can change; refresh the list before selecting one.
+
+All provider keys stay in ignored `outputs/settings/api-keys.json`. Source publication runs `python scripts/audit_git_privacy.py --staged`; installer audits check every saved provider key in memory and never print values.
 
 ## Writing buttons (Create)
 

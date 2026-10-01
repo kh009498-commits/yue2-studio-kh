@@ -74,11 +74,12 @@ New-Item -ItemType Directory -Force -Path $StageRoot | Out-Null
 $PythonStage = Join-Path $StageRoot 'python'
 New-Item -ItemType Directory -Force -Path $PythonStage | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'python') -File -Filter '*.py' |
+    Where-Object { $_.Name -notmatch '^(music3_|caption_library\.py$|_tmp_)' } |
     Copy-Item -Destination $PythonStage -Force
 foreach ($File in @('requirements.txt', 'engine-requirements.txt', 'model_catalog.json', 'woosh_downloads.json')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "python\$File") -Destination $PythonStage -Force
 }
-foreach ($Directory in @('caption_library', 'cover_art', 'video_studio')) {
+foreach ($Directory in @('cover_art', 'video_studio')) {
     Copy-Tree (Join-Path $ProjectRoot "python\$Directory") (Join-Path $PythonStage $Directory)
 }
 

@@ -1,5 +1,40 @@
 import { useEffect, useState } from "react";
-import { getAiKeys, saveAiKeys, type AiKeysView } from "./api";
+import { getAiKeys, listAiModels, saveAiKeys, type AiKeysView, type AiModelList } from "./api";
+
+type ModelListState = AiModelList & { loading?: boolean };
+const CUSTOM = "__custom__";
+
+/** Writing model picker: the provider's live list, with "type your own" as an escape hatch. */
+function ModelPicker({ value, list, placeholder, onChange, onRefresh }: {
+  value: string; list?: ModelListState; placeholder: string;
+  onChange: (model: string) => void; onRefresh: () => void;
+}) {
+  const [typing, setTyping] = useState(false);
+  const known = list ? [...list.recommended, ...list.models] : [];
+  const listed = known.includes(value);
+  const showInput = typing || !listed;
+  return <>
+    <label>Model
+      <div className="model-picker">
+        <select value={showInput ? CUSTOM : value} disabled={list?.loading} onChange={(event) => {
+          if (event.target.value === CUSTOM) { setTyping(true); return; }
+          setTyping(false); onChange(event.target.value);
+        }}>
+          {list?.loading && <option value={CUSTOM}>Loading models…</option>}
+          {!list?.loading && list?.recommended.length ? <optgroup label="Recommended for songs">{list.recommended.map((model) => <option key={model} value={model}>{model}{model === list.default ? " (default)" : ""}</option>)}</optgroup> : null}
+          {!list?.loading && list?.models.length ? <optgroup label="All writing models">{list.models.map((model) => <option key={model} value={model}>{model}{model === list.default ? " (default)" : ""}</option>)}</optgroup> : null}
+          {!list?.loading && <option value={CUSTOM}>{!listed && value ? `Typed: ${value}` : "Type a model ID…"}</option>}
+        </select>
+        <button type="button" className="model-refresh" title="Reload this provider's model list" aria-label="Reload model list" disabled={list?.loading} onClick={onRefresh}>↻</button>
+      </div>
+    </label>
+    {showInput && <input className="model-typed" aria-label="Model ID" spellCheck={false} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />}
+    {list?.error && <small className="model-note warn">{list.error}</small>}
+    {!list?.loading && !list?.error && known.length > 0 && value && !listed && <small className="model-note warn">This model isn't in the provider's current list. Songs may fail unless the ID is exactly right.</small>}
+    {!list?.loading && !list?.error && known.length > 0 && <small className="model-note">{known.length} writing models available. Image, speech, and embedding models are hidden.</small>}
+  </>;
+}
+
 
 const ORDER = ["writing", "images", "video"] as const;
 
@@ -15,6 +50,18 @@ export default function KeysDrawer({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [drafts, setDrafts] = useState<Record<string, { enabled: boolean; provider: string; model: string; key: string; base_url: string }>>({});
+  const [modelLists, setModelLists] = useState<Record<string, ModelListState>>({});
+
+  const loadModels = async (provider: string, key = "", baseUrl = "") => {
+    if (!provider || provider === "local") return;
+    setModelLists((current) => ({ ...current, [provider]: { ...(current[provider] ?? { provider, default: "", models: [], recommended: [] }), loading: true, error: undefined } }));
+    try {
+      const list = await listAiModels({ provider, key: key.trim(), base_url: baseUrl.trim() });
+      setModelLists((current) => ({ ...current, [provider]: { ...list, loading: false } }));
+    } catch (reason: any) {
+      setModelLists((current) => ({ ...current, [provider]: { provider, default: "", models: [], recommended: [], loading: false, error: reason?.message ?? String(reason) } }));
+    }
+  };
 
   const load = async () => {
     try {
@@ -31,6 +78,8 @@ export default function KeysDrawer({
           base_url: next.providers.ollama?.base_url || "http://127.0.0.1:11434/v1",
         }];
       })));
+      const writingProvider = next.capabilities.writing?.provider;
+      if (writingProvider && writingProvider !== "local") void loadModels(writingProvider, "", next.providers.ollama?.base_url || "");
       setError("");
     } catch (reason: any) {
       setError(reason?.message ?? String(reason));
@@ -109,9 +158,13 @@ export default function KeysDrawer({
               provider,
               enabled: provider === "local" ? false : draft.enabled,
               key: "",
-              model: switchingToLocal ? (view.capabilities[id]?.provider === "ollama" ? draft.model : "gemma3:4b") : (provider === "gemini" ? "gemini-3.6-flash" : draft.model),
+              // Writing: never carry one provider's model over to another.
+              model: id === "writing"
+                ? (view.capabilities[id]?.provider === provider ? view.capabilities[id].model : (view.catalog.default_models?.[provider] ?? ""))
+                : switchingToLocal ? (view.capabilities[id]?.provider === "ollama" ? draft.model : "gemma3:4b") : (provider === "gemini" ? "gemini-3.6-flash" : draft.model),
               base_url: switchingToLocal ? (view.providers.ollama?.base_url || draft.base_url || "http://127.0.0.1:11434/v1") : draft.base_url,
             } }));
+            if (id === "writing" && provider !== "local") void loadModels(provider, "", view.providers.ollama?.base_url || draft.base_url);
           }}>
             {spec.providers.map((provider) => <option value={provider} key={provider}>{providerLabel(view, provider)}{provider !== "local" && view.providers[provider]?.configured ? " · saved" : ""}</option>)}
           </select>
@@ -123,18 +176,12 @@ export default function KeysDrawer({
         <small>{isLocalLlm ? "Off = current tools only. On = one request at a time to this server. No cloud credits." : "Off = current tools only. On = you may spend this provider’s credits when you press a button."}</small>
         {isLocalLlm && <>
           <label>Server URL (Ollama IP and port)
-            <input type="url" autoComplete="off" spellCheck={false} value={draft.base_url} placeholder="http://127.0.0.1:11434/v1" onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, base_url: event.target.value } }))} />
+            <input type="url" autoComplete="off" spellCheck={false} value={draft.base_url} placeholder="http://127.0.0.1:11434/v1" onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, base_url: event.target.value } }))} onBlur={() => void loadModels("ollama", draft.key, draft.base_url)} />
           </label>
           <small>Use this computer or a private-network address, for example <code>http://192.168.x.x:11434/v1</code>. OpenAI-compatible <code>/v1</code> endpoint.</small>
-          <label>Model
-            <input list="ollama-lyric-models" value={draft.model} onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, model: event.target.value } }))} placeholder="gemma3:4b" />
-          </label>
-          <datalist id="ollama-lyric-models">
-            <option value="gemma3:4b">Gemma 3 4B — recommended local writer</option>
-            <option value="ministral-3:8b-instruct-2512-q4_K_M">Ministral 3 8B — richer lyrics</option>
-            <option value="aya-expanse:8b">Aya Expanse 8B — multilingual (non-commercial)</option>
-            <option value="qwen3.5:9b">Qwen 3.5 9B — keep as fallback</option>
-          </datalist>
+          <ModelPicker value={draft.model} list={modelLists.ollama} placeholder="gemma3:4b"
+            onChange={(model) => setDrafts((current) => ({ ...current, [id]: { ...current[id], model } }))}
+            onRefresh={() => void loadModels("ollama", draft.key, draft.base_url)} />
           <small>Gemma 3 4B is the recommended Live default. Aya Expanse is CC BY-NC — personal use only.</small>
           <label>API key (optional)
             <input type="password" autoComplete="off" spellCheck={false} value={draft.key} placeholder={selected?.configured ? `Saved ·••••${selected.last4}` : "ollama"} onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, key: event.target.value } }))} />
@@ -143,9 +190,13 @@ export default function KeysDrawer({
         </>}
         {draft.provider !== "local" && !isLocalLlm && <>
           <label>API key
-            <input type="password" autoComplete="off" spellCheck={false} value={draft.key} placeholder={selected?.configured ? `Saved ·••••${selected.last4}` : "Paste key — it is never shown again"} onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, key: event.target.value } }))} />
+            <input type="password" autoComplete="off" spellCheck={false} value={draft.key} placeholder={selected?.configured ? `Saved ·••••${selected.last4}` : "Paste key — it is never shown again"} onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, key: event.target.value } }))} onBlur={() => { if (id === "writing" && draft.key.trim()) void loadModels(draft.provider, draft.key); }} />
           </label>
-          <label>Model<input value={draft.model} onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, model: event.target.value } }))} placeholder={draft.provider === "gemini" ? "gemini-3.6-flash" : "Default model"} /></label>
+          {id === "writing"
+            ? <ModelPicker key={draft.provider} value={draft.model} list={modelLists[draft.provider]} placeholder={view.catalog.default_models?.[draft.provider] || "Default model"}
+                onChange={(model) => setDrafts((current) => ({ ...current, [id]: { ...current[id], model } }))}
+                onRefresh={() => void loadModels(draft.provider, draft.key)} />
+            : <label>Model<input value={draft.model} onChange={(event) => setDrafts((current) => ({ ...current, [id]: { ...draft, model: event.target.value } }))} placeholder={draft.provider === "gemini" ? "gemini-3.6-flash" : "Default model"} /></label>}
           {selected?.configured && <button type="button" className="keys-clear" disabled={Boolean(busy)} onClick={() => void clearKey(draft.provider)}>Remove saved {providerLabel(view, draft.provider)} key</button>}
         </>}
         <button type="button" className="system-action" disabled={busy === id} onClick={() => void saveCategory(id)}>{busy === id ? "Saving…" : "Save this category"}</button>

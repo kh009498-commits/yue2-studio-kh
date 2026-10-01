@@ -2,7 +2,7 @@
 
 ## Reproduced in the native application
 
-Launched `F:\YuE2-3B\YuE2 Studio.exe` and used Live → Start live with the normal five-song buffer. No generation or alignment calls were mocked.
+Launched `F:\Kraken Media\YuE2\YuE2 Studio.exe` and used Live → Start live with the normal five-song buffer. No generation or alignment calls were mocked.
 
 - Live generated **Circuit Horizon** (Techno, vocal duet).
 - Job `e4ca4548b0cc4dd7868de1f8b184311e` finished with `status=succeeded`, `progress=1`, `phase=Song ready`, lyric sync `ready`, 24 timed lines, and `needs_lyric_sync=false`.
@@ -26,7 +26,7 @@ The reader now owns closing stdout. Cleanup terminates the worker first, uses bo
 
 ## Native retest
 
-The rebuilt executable was copied to `F:\YuE2-3B\YuE2 Studio.exe` and relaunched. Used Live → Start live again, with the existing local Gemma writer and five-song buffer:
+The rebuilt executable was copied to `F:\Kraken Media\YuE2\YuE2 Studio.exe` and relaunched. Used Live → Start live again, with the existing local Gemma writer and five-song buffer:
 
 1. **Chromatic Descent** — instrumental; job `912864bf78db45e1892c5d82485c3c25` succeeded at 100%. Live added it to the queue and automatically generated the next song.
 2. **Prism Shift** — vocal; job `f45bb188cc704ef6af6d51a322f20204` succeeded at 100%, with lyric sync `ready` and 20 timed lines. Live's queue grew to seven songs and it advanced to writing an East Coast boom bap vocal duet. No 98% stall and no remaining WhisperX process.

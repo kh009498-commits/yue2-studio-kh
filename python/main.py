@@ -17,7 +17,6 @@ from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from config import LAN_PORT, LIBRARY_ROOT, LOGS_ROOT, OUTPUTS_ROOT, SIDECAR_HOST, SIDECAR_PORT
-from jobs import Job, manager
+from jobs import Job, current_owner, manager
 from log_buffer import install, ring
 import yue2_engine
 import cover_art
@@ -35,20 +34,25 @@ import generation_timing
 import stable_sfx
 import ai_vault
 import ai_assist
-import caption_library
 import voice_profiles
 import model_manager
 import lan_access
+from origin_guard import OriginGuard
 
 install(LOGS_ROOT)
 log = logging.getLogger("yue2.studio")
-app = FastAPI(title="YuE2 Studio", version="0.6.2")
+app = FastAPI(title="YuE2 Studio", version="0.7.0")
 
 # The MCP process is deliberately a separate client of this local service.  Keep
 # a compact, in-memory audit trail so its actions are visible in Studio instead
 # of becoming invisible background automation.
 mcp_activity: deque[dict] = deque(maxlen=200)
 mcp_activity_lock = threading.Lock()
+# Live MCP clients by session id -> {"name", "last_seen"}. MCP servers heartbeat
+# every few seconds; a client that stops (crash, host closed) expires after the
+# lease, so the indicator also works when Studio starts after the agent.
+mcp_connections: dict[str, dict] = {}
+MCP_LEASE_SECONDS = 20
 
 
 @app.middleware("http")
@@ -110,39 +114,37 @@ def stop_model_installations():
     model_manager.shutdown()
     ai_assist.abort_writing(shutdown=True)
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,64}")
 
 
-class TauriWebViewCORSMiddleware(BaseHTTPMiddleware):
-    """Let the Tauri WebView2 UI call this sidecar.
-
-    GET /api/status is a simple request so it works. POST /api/generate is
-    preflighted. WebView2 also flags https://tauri.localhost -> 127.0.0.1 as a
-    private-network request. Without Allow-Private-Network the preflight is
-    dropped, fetch() throws, and the UI shows 'service is not running'
-    even while this process is healthy.
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("origin") or "*"
-        if request.method == "OPTIONS":
-            requested = request.headers.get("access-control-request-headers") or "*"
-            return Response(status_code=204, headers={
-                "Access-Control-Allow-Origin": origin,
-                "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-                "Access-Control-Allow-Headers": requested,
-                "Access-Control-Allow-Private-Network": "true",
-                "Access-Control-Max-Age": "600",
-            })
-        response = await call_next(request)
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
-        if request.url.path.startswith("/video-studio"):
-            response.headers["Cache-Control"] = "no-store"
-        return response
+@app.middleware("http")
+async def remember_job_owner(request: Request, call_next):
+    """Tag jobs with the browser that queued them, so each person sees and
+    cancels their own songs in the shared line."""
+    client_id = request.query_params.get("studio_client", "")
+    if not CLIENT_ID_PATTERN.fullmatch(client_id):
+        client_id = ""
+    name = re.sub(r"\s+", " ", request.query_params.get("studio_name", "")).strip()[:40]
+    if client_id and not name:
+        name = "Studio PC" if lan_access.is_local(request) else "Guest"
+    token = current_owner.set((client_id, name))
+    try:
+        return await call_next(request)
+    finally:
+        current_owner.reset(token)
 
 
-app.add_middleware(TauriWebViewCORSMiddleware)
+@app.middleware("http")
+async def video_studio_no_cache(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/video-studio"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# Added last so it runs first: reject requests from any website that is not
+# Studio itself (see origin_guard.py), and send CORS headers only to Studio.
+app.add_middleware(OriginGuard)
 VIDEO_STUDIO_ROOT = Path(__file__).resolve().parent / "video_studio"
 VIDEO_RENDER_ROOT = OUTPUTS_ROOT / "videos"
 app.mount("/video-studio-static", StaticFiles(directory=VIDEO_STUDIO_ROOT), name="video-studio-static")
@@ -1257,7 +1259,15 @@ def status():
         sheetsage_status = sheetsage.status()
     except Exception:
         sheetsage_status = {"ready": False, "detail": "SheetSage2 status could not be read."}
-    return {"model": yue2_engine.model_status(), "cover_art": cover_art.status(), "stems": stems_status(), "sound_effects": stable_sfx.status(), "lyrics_sync": lyrics_sync.status(), "sheetsage": sheetsage_status, "exports": {"ready": bool(ffmpeg), "detail": "MP3 and FLAC export ready" if ffmpeg else "Run Setup to install the private FFmpeg exporter"}, "service": inference_status(), "gpu": gpu_status(), "ai": ai_vault.status(), "jobs": [job.snapshot() for job in manager.list()[:30]]}
+    return {"model": yue2_engine.model_status(), "cover_art": cover_art.status(), "stems": stems_status(), "sound_effects": stable_sfx.status(), "lyrics_sync": lyrics_sync.status(), "sheetsage": sheetsage_status, "exports": {"ready": bool(ffmpeg), "detail": "MP3 and FLAC export ready" if ffmpeg else "Run Setup to install the private FFmpeg exporter"}, "service": inference_status(), "gpu": gpu_status(), "ai": ai_vault.status(), "jobs": _status_jobs(), "queue": manager.queue_snapshot()}
+
+
+def _status_jobs() -> list[dict]:
+    """Every waiting/running job plus the most recent finished ones."""
+    jobs = manager.list()
+    active = [job for job in jobs if job.status in {"queued", "running"}]
+    recent = [job for job in jobs if job.status not in {"queued", "running"}][:30]
+    return [manager.describe(job) for job in active + recent]
 
 
 class McpActivityRequest(BaseModel):
@@ -1266,10 +1276,50 @@ class McpActivityRequest(BaseModel):
     status: str = Field(default="started", pattern="^(connected|disconnected|started|succeeded|failed)$")
 
 
+class McpConnectionRequest(BaseModel):
+    session: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(default="AI agent", min_length=1, max_length=40)
+    connected: bool = True
+
+
+def _record_mcp_activity(tool: str, summary: str, status: str) -> dict:
+    entry = {"id": uuid.uuid4().hex[:12], "at": time.time(), "tool": tool, "summary": summary, "status": status}
+    mcp_activity.append(entry)
+    return entry
+
+
+def _expire_mcp_connections(now: float) -> None:
+    for session, client in list(mcp_connections.items()):
+        if now - client["last_seen"] > MCP_LEASE_SECONDS:
+            del mcp_connections[session]
+            _record_mcp_activity("connection", f"{client['name']} connection expired", "disconnected")
+
+
+@app.post("/api/mcp/connection")
+def mcp_connection(request: McpConnectionRequest):
+    now = time.time()
+    with mcp_activity_lock:
+        _expire_mcp_connections(now)
+        known = mcp_connections.get(request.session)
+        if not request.connected:
+            if known:
+                del mcp_connections[request.session]
+                _record_mcp_activity("connection", f"{known['name']} disconnected from YuE2 Studio", "disconnected")
+        else:
+            if not known:
+                _record_mcp_activity("connection", f"{request.name} connected to YuE2 Studio", "connected")
+            elif known["name"] != request.name:
+                _record_mcp_activity("connection", f"{known['name']} identified as {request.name}", "connected")
+            mcp_connections[request.session] = {"name": request.name, "last_seen": now}
+        return {"ok": True, "lease_seconds": MCP_LEASE_SECONDS}
+
+
 @app.get("/api/mcp/activity")
 def get_mcp_activity():
     with mcp_activity_lock:
-        return {"items": list(reversed(mcp_activity))}
+        _expire_mcp_connections(time.time())
+        clients = sorted({client["name"] for client in mcp_connections.values()})
+        return {"items": list(reversed(mcp_activity)), "connections": clients}
 
 
 @app.post("/api/mcp/activity")
@@ -1300,6 +1350,24 @@ def put_lyric_preferences(request: LyricPreferencesRequest):
 @app.get("/api/settings/ai-keys")
 def get_ai_keys():
     return ai_vault.public_view()
+
+
+class AiModelsRequest(BaseModel):
+    provider: str = Field(min_length=2, max_length=40)
+    key: str = Field(default="", max_length=500)
+    base_url: str = Field(default="", max_length=300)
+
+
+@app.post("/api/settings/ai-models")
+def list_ai_models(request: AiModelsRequest):
+    """Live writing-model list for the Keys dropdown (POST so a typed key never lands in a URL or log)."""
+    import ai_models
+    try:
+        return ai_models.list_models(request.provider, key=request.key, base_url=request.base_url)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        return {"provider": request.provider, "default": ai_models.DEFAULT_MODELS.get(request.provider, ""), "models": [], "recommended": [], "error": str(error)}
 
 
 @app.put("/api/settings/ai-keys")
@@ -1417,8 +1485,8 @@ def generate_voice_avatar(profile_id: str, request: CoverArtRequest):
 
 @app.get("/api/assist/caption-library")
 def assist_caption_library():
-    """Is the local caption reference library present, and what does it route to?"""
-    return caption_library.stats()
+    """Compatibility endpoint: YuE2 styles do not use a retrieved caption corpus."""
+    return {"available": False, "families": 0, "cards": 0, "templates": 0}
 
 
 @app.post("/api/assist/chat")
@@ -1526,17 +1594,20 @@ def start_generation(request: GenerateRequest):
         log.exception("Could not prepare YuE2 prompt")
         raise HTTPException(500, detail=f"Could not prepare the YuE2 prompt: {error}") from error
     job = manager.submit("yue2", params, generate)
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     job = manager.get(job_id)
     if not job: raise HTTPException(404, "Job not found")
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 @app.post("/api/jobs/{job_id}/cancel")
-def cancel(job_id: str):
+def cancel(job_id: str, request: Request):
     target = manager.get(job_id)
+    requester = current_owner.get()[0]
+    if target and not lan_access.is_local(request) and (not target.owner or target.owner != requester):
+        raise HTTPException(403, f"Only {target.owner_name or 'the person who queued it'} or the studio PC can cancel this song.")
     was_running = bool(target and target.status == "running")
     if not manager.cancel_job(job_id): raise HTTPException(409, "Job is already finished or missing")
     if was_running and target and target.kind == "yue2":
@@ -1767,7 +1838,7 @@ def start_cover_regeneration(folder: str, request: CoverArtRequest):
     if not cover_art.available():
         raise HTTPException(409, cover_art.status()["detail"])
     job = manager.submit("cover_art", {"folder": folder, "direction": request.direction.strip()}, regenerate_cover)
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 
 @app.post("/api/library/{folder:path}/cover/upload")
@@ -1902,7 +1973,7 @@ def start_stem_extraction(folder: str, request: StemRequest):
     resolve_song_folder(folder); state = stems_status()
     if not state["ready"]: raise HTTPException(409, state["detail"])
     job = manager.submit("stems", {"folder": folder, "mode": request.mode}, extract_stems)
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 
 def _studio_manifest(song_dir: Path) -> tuple[Path, dict]:
@@ -1966,7 +2037,7 @@ def generate_studio_sound(folder: str, request: SoundEffectRequest):
     if params["seed"] is None:
         params["seed"] = int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF
     job = manager.submit("stable_sfx", params, lambda active: stable_sfx.generate(active, song_dir))
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 
 @app.get("/api/effects")
@@ -1985,7 +2056,7 @@ def generate_effect(request: SoundEffectRequest):
     if params["seed"] is None:
         params["seed"] = int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF
     job = manager.submit("stable_sfx", params, lambda active: stable_sfx.generate(active))
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 
 @app.post("/api/effects/import")
@@ -2466,7 +2537,7 @@ def start_lyrics_synchronization(folder: str):
     if not state["ready"]:
         raise HTTPException(409, state["detail"])
     job = manager.submit("lyrics_sync", {"folder": folder}, synchronize_song_lyrics)
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 
 def transcribe_cover_score(job: Job) -> dict:
@@ -2511,7 +2582,7 @@ def start_cover_transcription(folder: str, request: CoverTranscribeRequest):
         {"folder": folder, "melody_only": request.melody_only, "reuse_cached": request.reuse_cached},
         transcribe_cover_score,
     )
-    return {"job": job.snapshot()}
+    return {"job": manager.describe(job)}
 
 
 @app.get("/api/library/{folder:path}/stems/{filename}")

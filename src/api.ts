@@ -31,7 +31,54 @@ function errorDetail(status: number, raw: string): string {
 
 type SidecarHttpResult = { status: number; body: string };
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+// ---- Who is this browser? -------------------------------------------------
+// Each browser gets a random id (kept in this browser only) plus a display
+// name, so the shared song line can show whose song is whose and only let the
+// owner (or the studio PC) cancel it.
+const CLIENT_ID_KEY = "yue2-client-id";
+const CLIENT_NAME_KEY = "yue2-client-name";
+let memoryClientId = "";
+let memoryClientName = "";
+
+function readStored(key: string): string {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+}
+function writeStored(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* private window: keep it in memory */ }
+}
+function randomId(): string {
+  // crypto.randomUUID only exists on https/localhost; the home-network page is
+  // plain http, so build the id from getRandomValues, which works everywhere.
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function isStudioPc(): boolean {
+  return "__TAURI_INTERNALS__" in window || ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+}
+export function clientId(): string {
+  if (memoryClientId) return memoryClientId;
+  const stored = readStored(CLIENT_ID_KEY);
+  memoryClientId = /^[A-Za-z0-9_-]{8,64}$/.test(stored) ? stored : randomId();
+  if (memoryClientId !== stored) writeStored(CLIENT_ID_KEY, memoryClientId);
+  return memoryClientId;
+}
+export function clientName(): string {
+  if (!memoryClientName) memoryClientName = readStored(CLIENT_NAME_KEY).trim().slice(0, 40) || (isStudioPc() ? "Studio PC" : "Guest");
+  return memoryClientName;
+}
+export function setClientName(name: string) {
+  memoryClientName = name.replace(/\s+/g, " ").trim().slice(0, 40) || (isStudioPc() ? "Studio PC" : "Guest");
+  writeStored(CLIENT_NAME_KEY, memoryClientName);
+}
+function withIdentity(path: string): string {
+  const joiner = path.includes("?") ? "&" : "?";
+  return `${path}${joiner}studio_client=${encodeURIComponent(clientId())}&studio_name=${encodeURIComponent(clientName())}`;
+}
+
+async function request<T>(rawPath: string, options?: RequestInit): Promise<T> {
+  const path = withIdentity(rawPath);
   if ("__TAURI_INTERNALS__" in window) {
     const method = String(options?.method || "GET").toUpperCase();
     const rawBody = options?.body;
@@ -70,7 +117,7 @@ export type GpuPolicy = { available?: boolean; measured?: boolean; total_gb?: nu
 export type GpuStatus = { detected: boolean; name: string | null; vram_total_mb: number | null; vram_free_mb: number | null; usage: number | null; temperature: number | null; driver: string | null; policy?: GpuPolicy };
 export type CoverArtStatus = { ready: boolean; model: string; filename: string; size_bytes: number; source: string; detail: string };
 export type UtilityStatus = { ready: boolean; model?: string; root?: string; detail?: string };
-export type Job = { id: string; kind: string; status: string; phase: string; progress: number; stage_progress?: number | null; eta_seconds?: number | null; result?: any; error?: string | null; created_at: number; started_at?: number | null; finished_at?: number | null };
+export type Job = { id: string; kind: string; status: string; phase: string; progress: number; stage_progress?: number | null; eta_seconds?: number | null; result?: any; error?: string | null; created_at: number; started_at?: number | null; finished_at?: number | null; owner?: string; owner_name?: string; title?: string; queue_position?: number | null };
 export type TimedWord = { text: string; start: number; end: number };
 export type TimedLyricLine = { index: number; text: string; translation?: string; start: number; end: number; matchScore?: number; words?: TimedWord[] };
 export type TimedLyrics = { language: string; translation_language?: string; alignment_method?: string; line_count?: number; word_count?: number; lines: TimedLyricLine[] };
@@ -107,6 +154,7 @@ export type AiCapabilityState = { enabled: boolean; provider: string; model: str
 export type AiKeysView = {
   version: number;
   catalog: {
+    default_models?: Record<string, string>;
     providers: Record<string, { label: string; jobs: string[] }>;
     capabilities: Record<string, { label: string; blurb: string; providers: string[]; local_ok: boolean; how?: { summary: string; rules: string[]; constraints?: Record<string, unknown> } }>;
   };
@@ -114,7 +162,7 @@ export type AiKeysView = {
   capabilities: Record<string, AiCapabilityState>;
 };
 export type SoundEffectsEngineStatus = UtilityStatus & { runtime_ready?: boolean; processor?: string; size_bytes?: number; present?: number; required?: number; max_duration?: number };
-export type Status = { model: ModelStatus; cover_art: CoverArtStatus; stems: UtilityStatus; sound_effects: SoundEffectsEngineStatus & { models?: { stable: SoundEffectsEngineStatus; woosh: SoundEffectsEngineStatus } }; lyrics_sync: UtilityStatus; sheetsage?: UtilityStatus; exports: UtilityStatus; service: ServiceStatus; gpu: GpuStatus; ai?: Record<string, AiCapabilityStatus>; jobs: Job[] };
+export type Status = { model: ModelStatus; cover_art: CoverArtStatus; stems: UtilityStatus; sound_effects: SoundEffectsEngineStatus & { models?: { stable: SoundEffectsEngineStatus; woosh: SoundEffectsEngineStatus } }; lyrics_sync: UtilityStatus; sheetsage?: UtilityStatus; exports: UtilityStatus; service: ServiceStatus; gpu: GpuStatus; ai?: Record<string, AiCapabilityStatus>; jobs: Job[]; queue?: Job[] };
 export type LogEntry = { id: number; ts: number; level: string; logger: string; message: string };
 export type McpActivity = { id: string; at: number; tool: string; summary: string; status: "connected" | "disconnected" | "started" | "succeeded" | "failed" };
 export type ModelInstallStatus = { status: "idle" | "running" | "succeeded" | "failed" | "cancelled"; phase: string; progress: number; error?: string | null };
@@ -128,10 +176,12 @@ export type DownloadableModel = {
 };
 
 export const getStatus = () => request<Status>("/api/status");
-export const getMcpActivity = () => request<{ items: McpActivity[] }>("/api/mcp/activity");
+export const getMcpActivity = () => request<{ items: McpActivity[]; connections?: string[] }>("/api/mcp/activity");
 export const getModels = () => request<{ items: DownloadableModel[] }>("/api/models");
 export const installModel = (id: DownloadableModel["id"], token?: string) => request<{ item?: DownloadableModel }>(`/api/models/${encodeURIComponent(id)}/install`, { method: "POST", headers: token ? { "Content-Type": "application/json" } : undefined, body: token ? JSON.stringify({ token }) : undefined });
 export const cancelModelInstall = (id: DownloadableModel["id"]) => request<{ item?: DownloadableModel }>(`/api/models/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+export type AiModelList = { provider: string; default: string; models: string[]; recommended: string[]; error?: string };
+export const listAiModels = (body: { provider: string; key?: string; base_url?: string }) => request<AiModelList>("/api/settings/ai-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 export const getAiKeys = () => request<AiKeysView>("/api/settings/ai-keys");
 export const saveAiKeys = (body: { providers?: Record<string, { key?: string; base_url?: string; clear?: boolean }>; capabilities?: Record<string, { enabled?: boolean; provider?: string; model?: string }> }) => request<AiKeysView>("/api/settings/ai-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 export type ChatMessage = { role: "user" | "assistant"; content: string };

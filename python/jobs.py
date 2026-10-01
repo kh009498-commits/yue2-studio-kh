@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from queue import Queue
 from typing import Any, Callable
@@ -12,6 +13,12 @@ import model_manager
 
 log = logging.getLogger("yue2.jobs")
 JobFn = Callable[["Job"], dict[str, Any]]
+ACTIVE = ("queued", "running")
+FINISHED_JOBS_KEPT = 150
+
+# Who is submitting the current request: (browser id, display name). main.py
+# sets this per request so every job remembers which person queued it.
+current_owner: ContextVar[tuple[str, str]] = ContextVar("yue2_job_owner", default=("", ""))
 
 
 @dataclass
@@ -31,6 +38,8 @@ class Job:
     finished_at: float | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
     client: Any = None
+    owner: str = field(default_factory=lambda: current_owner.get()[0])
+    owner_name: str = field(default_factory=lambda: current_owner.get()[1])
     subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = field(default_factory=list)
 
     def emit(self) -> None:
@@ -47,6 +56,8 @@ class Job:
             "stage_progress": self.stage_progress,
             "error": self.error, "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at,
+            "owner": self.owner, "owner_name": self.owner_name,
+            "title": str(self.params.get("title") or self.params.get("name") or self.params.get("folder") or ""),
         }
 
 
@@ -75,6 +86,33 @@ class JobManager:
         }.get(kind, "Queued job %s")
         log.info(queued, job.id[:8])
         return job
+
+    def waiting_line(self) -> list[Job]:
+        """Jobs waiting or running, in the order the single GPU worker takes them."""
+        with self.lock:
+            active = [job for job in self.jobs.values() if job.status in ACTIVE]
+        return sorted(active, key=lambda job: (job.status != "running", job.created_at))
+
+    def describe(self, job: Job) -> dict[str, Any]:
+        """Snapshot plus the job's place in line (1 = being made now)."""
+        snapshot = job.snapshot()
+        line = self.waiting_line()
+        position = next((index for index, item in enumerate(line, 1) if item is job), None)
+        snapshot["queue_position"] = position
+        if job.status == "queued" and position is not None:
+            waiting_ahead = sum(1 for item in line[:position - 1] if item.status == "queued")
+            snapshot["phase"] = f"Waiting in line · {waiting_ahead} ahead of you" if waiting_ahead else "Up next"
+        return snapshot
+
+    def queue_snapshot(self) -> list[dict[str, Any]]:
+        return [self.describe(job) for job in self.waiting_line()]
+
+    def _trim_finished(self) -> None:
+        with self.lock:
+            finished = sorted((job for job in self.jobs.values() if job.status not in ACTIVE), key=lambda job: job.created_at)
+            for job in finished[:-FINISHED_JOBS_KEPT] if len(finished) > FINISHED_JOBS_KEPT else []:
+                if not job.subscribers:
+                    self.jobs.pop(job.id, None)
 
     def get(self, job_id: str) -> Job | None:
         with self.lock: return self.jobs.get(job_id)
@@ -127,6 +165,7 @@ class JobManager:
                     log.exception("Studio job %s failed", job.id[:8])
             finally:
                 job.client = None; job.finished_at = time.time(); job.emit(); self.queue.task_done()
+                self._trim_finished()
 
 
 manager = JobManager()

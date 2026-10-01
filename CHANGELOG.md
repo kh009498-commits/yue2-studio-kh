@@ -2,6 +2,28 @@
 
 All notable changes to YuE2 Studio are documented here. The same notes are used for GitHub releases.
 
+## [Unreleased]
+
+### Added
+- **Shared song queue.** Several people (for example the studio PC and a browser on the home network) can queue songs at the same time; they are made one after another on the GPU. The Create page and Library show the line with each song's owner, position (**Up next**, **Waiting in line · N ahead of you**) and live progress. Anyone can keep clicking **Add to queue**. Each browser picks a display name. Only the person who queued a song, or the studio PC, can cancel it. The library refreshes for everyone when any song finishes.
+
+- **Keys → Writing model dropdown.** The Model box now lists the models the chosen provider actually offers (live from NVIDIA NIM, OpenAI, Groq, xAI, Anthropic, Gemini, or your Local LLM server), with song-friendly picks under **Recommended** and image/speech/embedding/safety models hidden. **Type a model ID…** still allows any ID; a warning shows when a typed ID isn't in the provider's list.
+
+### Security
+- The local service now only accepts commands from Studio itself (the desktop window, pages served by Studio on this PC or the home-network address). Other websites open in a browser can no longer control Studio in the background, and DNS-rebinding hosts are refused.
+
+### Fixed
+- Writing vault normalization and API updates now use provider-specific defaults, repair known inherited IDs, and migrate the retired NVIDIA MiniMax model to DeepSeek. Custom model IDs remain supported.
+- YuE2 no longer imports the inherited caption corpus. The compatibility statistics route reports it disabled; installer payloads exclude dormant Music3 workers and caption assets. Song generation remains exclusively YuE2.
+- Credential audits cover all saved provider keys, with values withheld; private settings, old executable backups, and Windows shortcuts stay excluded from source publication.
+- Sidecar API metadata now reports the current 0.7.0 application version.
+- MCP server: song folders with spaces (most of the library) now work with `update_song`/`rate_song`; replies are always UTF-8 on Windows (non-English characters previously broke the reply for every MCP client); the connected agent's name (Claude, Codex, Grok) labels its activity and queued songs.
+- NVIDIA NIM's free tier gets 150s per writing call instead of 90s (lyrics took 82–98s in testing), and the desktop bridge waits up to 480s. Timeouts now name the real provider instead of "Local LLM timed out".
+- Job-starting endpoints return the song's queue position immediately.
+- Switching the Writing provider no longer keeps the previous provider's model (e.g. `gemini-3.6-flash` under NVIDIA NIM).
+- The default NVIDIA NIM model `minimaxai/minimax-m3` was retired from NVIDIA's catalog; the default is now `deepseek-ai/deepseek-v4.1-flash`.
+- Finished jobs are trimmed (last 150 kept) so the job list no longer grows for the life of the process.
+
 ## [0.7.0] — 2026-09-19
 
 ### Added

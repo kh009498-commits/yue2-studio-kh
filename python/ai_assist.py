@@ -8,13 +8,14 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Literal
 
 import lyric_preferences
 import ai_guides
 import ai_vault
-import caption_library
+from writing_models import DEFAULT_MODELS
 import lyrics_sync
 
 log = logging.getLogger("yue2.assist")
@@ -1009,15 +1010,6 @@ def _clean_caption(raw: str) -> str:
     return text.strip()
 
 
-def _reference_labels(brief: str, lyrics: str, title: str) -> str:
-    """Human-readable note about which library references were consulted."""
-    try:
-        picked = caption_library.select(brief, lyrics=lyrics, title=title)
-    except Exception:
-        return ""
-    return ", ".join(f"{card['role']}: {card['style']}" for card in picked)
-
-
 def _complete(provider: str, model: str, key: str, system: str, user: str, *, temperature: float = 0.95,
               effort: str = "MEDIUM", timeout: int = 90, label: str = "writing", base_url: str | None = None) -> str:
     if writing_cancelled():
@@ -1039,6 +1031,9 @@ def _complete(provider: str, model: str, key: str, system: str, user: str, *, te
         log.info("assist %s via %s/%s took %.1fs avoid_list=%s", label, provider, model, time.monotonic() - started, avoid_state)
 
 
+CLOUD_SLOW_TIMEOUT = 150
+
+
 def _complete_inner(provider: str, model: str, key: str, system: str, user: str, *, temperature: float = 0.95,
                     effort: str = "MEDIUM", timeout: int = 90, base_url: str | None = None) -> str:
     if provider == "gemini":
@@ -1055,13 +1050,17 @@ def _complete_inner(provider: str, model: str, key: str, system: str, user: str,
                 think=False if "qwen3.5" in (model or "").lower() else None,
             )
     if provider in {"xai", "groq", "openai", "nvidia"}:
+        # NVIDIA's free tier queues requests when busy; 90s was measured too short
+        # for full lyrics (82-90s+ observed on 2026-09-25).
+        if provider == "nvidia":
+            timeout = max(timeout, CLOUD_SLOW_TIMEOUT)
         return _openai_compat(provider, model, key, system, user, temperature=temperature, timeout=timeout)
     raise ValueError(f"Writing is not wired for {provider}")
 
 
 def _gemini(model: str, key: str, system: str, user: str, *, temperature: float = 0.95,
             effort: str = "MEDIUM", timeout: int = 90) -> str:
-    url = ENDPOINTS["gemini"].format(model=model or "gemini-3.6-flash")
+    url = ENDPOINTS["gemini"].format(model=model or DEFAULT_MODELS["gemini"])
     # Songwriting and caption design are reasoning tasks. Earlier builds sent
     # thinkingLevel MINIMAL / thinkingBudget 0 at high temperature, which is the
     # fastest way to get generic, cliche output. Ask for real thinking first and
@@ -1109,15 +1108,8 @@ def _ollama_chat(model: str, system: str, user: str, *, temperature: float, time
 def _openai_compat(provider: str, model: str, key: str, system: str, user: str, *, temperature: float = 0.95,
                    timeout: int = 90, url: str | None = None, max_tokens: int = 4096, think: bool | None = None,
                    lyric_sampler: bool = False) -> str:
-    defaults = {
-        "xai": "grok-3",
-        "groq": "llama-3.3-70b-versatile",
-        "openai": "gpt-4.1-mini",
-        "nvidia": "minimaxai/minimax-m3",
-        "ollama": "gemma3:4b",
-    }
     payload = {
-        "model": model or defaults[provider],
+        "model": model or DEFAULT_MODELS[provider],
         "temperature": temperature,
         "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -1150,7 +1142,7 @@ def _openai_compat(provider: str, model: str, key: str, system: str, user: str, 
 def _anthropic(model: str, key: str, system: str, user: str, *, temperature: float = 0.95,
                timeout: int = 90) -> str:
     payload = {
-        "model": model or "claude-sonnet-4-5",
+        "model": model or DEFAULT_MODELS["anthropic"],
         "max_tokens": 4000,
         "temperature": min(temperature, 1.0),
         "system": system,
@@ -1184,7 +1176,7 @@ def _http(request: urllib.request.Request, *, timeout: int = 90) -> dict[str, An
                     _active_http = None
             response.close()
     except TimeoutError as error:
-        raise RuntimeError("Local LLM timed out") from error
+        raise RuntimeError(_timeout_message(request, timeout)) from error
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:400]
         raise RuntimeError(f"Writing provider HTTP {error.code}: {detail}") from error
@@ -1193,12 +1185,20 @@ def _http(request: urllib.request.Request, *, timeout: int = 90) -> dict[str, An
             raise RuntimeError("Writing cancelled") from error
         reason = error.reason
         if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            raise RuntimeError("Local LLM timed out") from error
+            raise RuntimeError(_timeout_message(request, timeout)) from error
         raise RuntimeError(f"Could not reach the writing provider ({reason})") from error
     try:
         return json.loads(raw)
     except json.JSONDecodeError as error:
         raise RuntimeError("Writing provider did not return JSON") from error
+
+
+def _timeout_message(request: urllib.request.Request, timeout: int) -> str:
+    host = urllib.parse.urlsplit(request.full_url).hostname or "the writing provider"
+    names = {"integrate.api.nvidia.com": "NVIDIA NIM", "generativelanguage.googleapis.com": "Google Gemini",
+             "api.x.ai": "xAI Grok", "api.groq.com": "Groq", "api.openai.com": "OpenAI", "api.anthropic.com": "Anthropic"}
+    name = names.get(host, host)
+    return f"{name} did not answer within {timeout}s. Free or busy cloud tiers can be slow; try again, or pick a faster model in Keys."
 
 
 def _first_title_line(text: str) -> str:

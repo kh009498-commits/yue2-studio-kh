@@ -245,7 +245,7 @@ class StudioTest(TestCase):
     def test_cancel_only_signals_yue2_engine_for_music_jobs(self) -> None:
         from fastapi.testclient import TestClient
         from jobs import Job
-        client = TestClient(main.app)
+        client = TestClient(main.app, base_url="http://127.0.0.1:7794", client=("127.0.0.1", 50000))
         cover = Job("cover-cancel", "cover_art", {})
         cover.status = "running"
         with patch.object(main.manager, "get", return_value=cover), patch.object(main.manager, "cancel_job", return_value=True), patch.object(main.yue2_engine, "cancel") as cancel:

@@ -13,6 +13,7 @@ from typing import Any
 
 from config import OUTPUTS_ROOT
 import ai_guides
+from writing_models import DEFAULT_MODELS, normalize_writing_model
 
 log = logging.getLogger("yue2.vault")
 VAULT_PATH = OUTPUTS_ROOT / "settings" / "api-keys.json"
@@ -36,7 +37,7 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "blurb": "Titles, lyrics, and style prompts for YuE2. The local YuE2 model generates the audio.",
         "providers": ("ollama", "gemini", "xai", "groq", "openai", "anthropic", "nvidia"),
         "default_provider": "gemini",
-        "default_model": "gemini-3.6-flash",
+        "default_model": DEFAULT_MODELS["gemini"],
         "local_ok": False,
     },
     "images": {
@@ -61,7 +62,7 @@ LOCAL_MODELS = {"images": "sd15", "video": "visualizer"}
 # A portable default. Users can enter a private LAN IP and port for a server
 # running elsewhere; never ship a workstation-specific address in the app.
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434/v1"
-OLLAMA_DEFAULT_MODEL = "gemma3:4b"
+OLLAMA_DEFAULT_MODEL = DEFAULT_MODELS["ollama"]
 
 
 def normalize_ollama_url(raw: str) -> str:
@@ -144,14 +145,11 @@ def _normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
         allowed = spec["providers"]
         if provider not in allowed:
             provider = spec["default_provider"]
-        model = str(incoming.get("model") or spec["default_model"]).strip() or spec["default_model"]
-        # Gemini 2.5 Flash and the earlier 3.5 default are unavailable to this
-        # API project. Migrate them rather than leaving saved writer settings
-        # failing until the user happens to edit them again.
-        if name == "writing" and provider == "gemini" and model in {"gemini-2.5-flash", "gemini-3.5-flash"}:
-            model = spec["default_model"]
-        if name == "writing" and provider == "ollama" and not model:
-            model = OLLAMA_DEFAULT_MODEL
+        model = str(incoming.get("model") or "").strip()
+        if name == "writing":
+            model = normalize_writing_model(provider, model)
+        else:
+            model = model or spec["default_model"]
         enabled = bool(incoming.get("enabled"))
         if enabled and not _can_enable(data, name, provider):
             enabled = False
@@ -205,6 +203,7 @@ def public_view() -> dict[str, Any]:
     return {
         "version": 1,
         "catalog": {
+            "default_models": dict(DEFAULT_MODELS),
             "providers": {name: {"label": spec["label"], "jobs": list(spec["jobs"])} for name, spec in PROVIDERS.items()},
             "capabilities": {
                 name: {
@@ -299,7 +298,10 @@ def apply_update(body: dict[str, Any]) -> dict[str, Any]:
             provider = str(entry.get("provider") or current["provider"])
             if provider not in CAPABILITIES[name]["providers"]:
                 raise ValueError(f"{CAPABILITIES[name]['label']} cannot use {provider}")
-            model = str(entry.get("model") if entry.get("model") is not None else current["model"]).strip()
+            previous_model = current["model"] if provider == current["provider"] else ""
+            model = str(entry.get("model") if entry.get("model") is not None else previous_model).strip()
+            if name == "writing":
+                model = normalize_writing_model(provider, model)
             if provider == "local":
                 model = LOCAL_MODELS.get(name, model)
             if provider == "ollama" and not model:

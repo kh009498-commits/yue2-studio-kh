@@ -82,12 +82,11 @@ class AiGuideTests(TestCase):
         prompt = "Intimate acoustic folk, warm alto, fingerpicked guitar, gentle bass, restrained chorus."
         access = {"provider": "gemini", "model": "test", "key": "test-only", "system": ai_guides.caption_system()}
         with patch.object(ai_assist, "prepare", return_value=access), \
-             patch.object(ai_assist, "_complete", return_value=prompt) as complete, \
-             patch.object(ai_assist.caption_library, "reference_block") as legacy:
+             patch.object(ai_assist, "_complete", return_value=prompt) as complete:
             result = ai_assist.describe(idea="Acoustic folk, no drums", lyrics="[Verse]\nStay with me\n[Interlude]", language="en")
         self.assertEqual(prompt, result["description"])
         self.assertEqual("", result["references"])
-        legacy.assert_not_called()
+        self.assertNotIn("caption_library", ai_assist.__dict__)
         user = complete.call_args.args[4]
         self.assertIn("no drums", user)
         self.assertIn("[Interlude]", user)

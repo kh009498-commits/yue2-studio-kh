@@ -44,7 +44,8 @@ import type { StylePreset } from "./styleTypes";
 import VoiceProfilesPanel from "./VoiceProfilesPanel";
 import { COVER_LIMITS, coverTitleFor, DEFAULT_LYRICS, EMPTY_VOICE_SLOTS, defaultCreateForm, isCreateFormDirty, melodyOnlyAbc, needsAutoTitle, REMIX_LIMITS, REMIX_NO_SCORE, remixTitleFor, SAMPLE_DESCRIPTION, songHasScore, type VoiceSlots } from "./createForm";
 import type { VoiceProfile } from "./voiceProfiles";
-import { rateSong, abortWriting, addSongToPlaylist, assistChat, assistWriting, audioUrl, cancelJob, clearMemory, convertAudio, createPlaylist, createWorkspace, deletePlaylist, deleteSong, deleteWorkspace, downloadUrl, extractStems, generate, getJob, getLanStatus, getLibrary, getMcpActivity, getPlaylists, getSongScore, getStatus, getVoiceProfiles, getWorkspaces, moveSongToWorkspace, openOutputs, openSongFolder, refreshModels, regenerateCover, removeSongFromPlaylist, saveAiKeys, saveLanSettings, synchronizeLyrics, transcribeCover, updateSong, uploadSongCover, videoStudioUrl, type ChatMessage, type Job, type LanStatus, type McpActivity, type Playlist, type Song, type Status, type TimedLyrics, type Workspace } from "./api";
+import { QueuePanel } from "./QueuePanel";
+import { clientId, rateSong, abortWriting, addSongToPlaylist, assistChat, assistWriting, audioUrl, cancelJob, clearMemory, convertAudio, createPlaylist, createWorkspace, deletePlaylist, deleteSong, deleteWorkspace, downloadUrl, extractStems, generate, getJob, getLanStatus, getLibrary, getMcpActivity, getPlaylists, getSongScore, getStatus, getVoiceProfiles, getWorkspaces, moveSongToWorkspace, openOutputs, openSongFolder, refreshModels, regenerateCover, removeSongFromPlaylist, saveAiKeys, saveLanSettings, synchronizeLyrics, transcribeCover, updateSong, uploadSongCover, videoStudioUrl, type ChatMessage, type Job, type LanStatus, type McpActivity, type Playlist, type Song, type Status, type TimedLyrics, type Workspace } from "./api";
 
 const SAMPLE = SAMPLE_DESCRIPTION;
 const EASY_TEMPLATE_PREVIEW = 8;
@@ -425,6 +426,7 @@ function timingLabel(job: Job) {
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [mcpActivity, setMcpActivity] = useState<McpActivity[]>([]);
+  const [mcpClients, setMcpClients] = useState<string[]>([]);
   const [songs, setSongs] = useState<Song[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -594,15 +596,16 @@ export default function App() {
     const [nextStatus, library, playlistData, workspaceData, voices, activity] = await Promise.all([
       getStatus(), getLibrary(), getPlaylists(), getWorkspaces(),
       getVoiceProfiles(true).catch(() => ({ items: [] as VoiceProfile[] })),
-      getMcpActivity().catch(() => ({ items: [] as McpActivity[] })),
+      getMcpActivity().catch(() => ({ items: [] as McpActivity[], connections: [] as string[] })),
     ]);
     setServiceReachable(true);
-    setStatus(nextStatus); setSongs(library.items); setPlaylists(playlistData.items); setWorkspaces(workspaceData.items); setVoiceProfiles(voices.items); setMcpActivity(activity.items);
+    setStatus(nextStatus); setSongs(library.items); setPlaylists(playlistData.items); setWorkspaces(workspaceData.items); setVoiceProfiles(voices.items); setMcpActivity(activity.items); setMcpClients(activity.connections ?? []);
     if (!initialSetupChecked.current) {
       initialSetupChecked.current = true;
       if (!nextStatus.model.ready) setStudioView("models");
     }
-    const active = nextStatus.jobs.filter((item) => ["queued", "running"].includes(item.status));
+    // Only pick up jobs this browser queued; other people's songs show in the shared queue.
+    const active = nextStatus.jobs.filter((item) => ["queued", "running"].includes(item.status) && item.owner === clientId());
     const restoredGeneration = active.find((item) => item.kind === "yue2" || item.kind === "music3");
     const restoredUtility = active.find((item) => item.kind !== "yue2" && item.kind !== "music3");
     if (restoredGeneration) setGenerationJob(restoredGeneration);
@@ -642,7 +645,15 @@ export default function App() {
       }
     };
     void boot();
-    const timer = window.setInterval(() => void Promise.all([getStatus(), getMcpActivity()]).then(([next, activity]) => { setStatus(next); setMcpActivity(activity.items); setServiceReachable(true); }).catch(() => setServiceReachable(false)), 3000);
+    let lastActive = new Set<string>();
+    const timer = window.setInterval(() => void Promise.all([getStatus(), getMcpActivity()]).then(([next, activity]) => {
+      setStatus(next); setMcpActivity(activity.items); setMcpClients(activity.connections ?? []); setServiceReachable(true);
+      // When anyone's song leaves the line, pull the library so it shows up for everyone.
+      const active = new Set(next.jobs.filter((item) => ["queued", "running"].includes(item.status)).map((item) => item.id));
+      const finished = [...lastActive].some((id) => !active.has(id));
+      lastActive = active;
+      if (finished) void refresh().catch(() => undefined);
+    }).catch(() => setServiceReachable(false)), 3000);
     return () => { stopped = true; window.clearInterval(timer); };
   }, []);
 
@@ -827,8 +838,9 @@ export default function App() {
   const selectedSong = songs.find((song) => song.id === selectedSongId) ?? null;
   const activeEditorSong = editorSong ? (songs.find((song) => song.id === editorSong.id) ?? editorSong) : null;
   const displayJob = utilityJob && ["queued", "running"].includes(utilityJob.status) ? utilityJob : generationJob ?? utilityJob;
-  const latestMcpConnection = mcpActivity.find((item) => item.tool === "connection");
-  const mcpConnected = latestMcpConnection?.status === "connected";
+  // Live heartbeat leases from the backend, not the last activity event: an agent that
+  // connected before Studio opened still shows, and a crashed one drops off.
+  const mcpConnected = mcpClients.length > 0;
   const studioStemJob = status?.jobs.find((job) => job.kind === "stems" && ["queued", "running"].includes(job.status))
     ?? (utilityJob?.kind === "stems" ? utilityJob : null);
   useEffect(() => {
@@ -1028,7 +1040,7 @@ export default function App() {
 
   // Easy mode already holds fresh values that React state has not committed
   // yet, so generation accepts explicit overrides instead of reading state.
-  async function startGeneration(overrides?: { title?: string; description?: string; lyrics?: string; instrumental?: boolean; lyricsLanguage?: string }) {
+  async function startGeneration(overrides?: { title?: string; description?: string; lyrics?: string; instrumental?: boolean; lyricsLanguage?: string; seed?: number | null }) {
     if (generationSubmitRef.current) return;
     const ownsWriting = !overrides;
     if (ownsWriting && !beginWriting()) return;
@@ -1037,7 +1049,8 @@ export default function App() {
     const epoch = createJobEpoch.current;
     setError("");
     try {
-      const seed = lockedSeed.trim() === "" ? null : Number.parseInt(lockedSeed, 10);
+      const locked = lockedSeed.trim() === "" ? null : Number.parseInt(lockedSeed, 10);
+      const seed = overrides?.seed !== undefined ? overrides.seed : locked;
       const instrumentalSong = overrides?.instrumental ?? instrumental;
       const sourceLyrics = overrides?.lyrics ?? lyrics;
       const language = overrides?.lyricsLanguage ?? lyricsLanguage;
@@ -1130,23 +1143,83 @@ export default function App() {
     }
   }
 
-  function generationInFlight() {
-    return Boolean(generationJob && ["queued", "running"].includes(generationJob.status));
+  // Songs now wait in a shared line, so an earlier song of yours no longer
+  // blocks the next one. Only guard against a double-click while submitting.
+  async function cancelQueuedJob(job: Job) {
+    try {
+      await cancelJob(job.id);
+      if (generationJob?.id === job.id) setGenerationJob({ ...generationJob, status: "cancelled", phase: "Cancelled" });
+      setStatus(await getStatus());
+    } catch (reason: any) { setError(reason?.message ?? String(reason)); }
   }
 
-  // Same Easy song, new YuE2 take. Keeps the prompt, style, and lyrics.
-  function rerunEasySong() {
+  function generationInFlight() {
+    return generationSubmitRef.current;
+  }
+
+  // Same Easy idea, new song. Rewrites the music description and lyrics, and
+  // explicitly ignores a locked seed so it cannot reproduce the previous take.
+  async function rerunEasySong() {
     if (chatBusy || generationInFlight()) return;
-    const caption = (chatStyle || description).trim();
-    if (!caption) return;
+    const idea = lastEasyPrompt.trim() || chatInput.trim();
+    if (!idea) return;
     setChatError("");
     setError("");
-    void startGeneration({
-      title: title.trim(),
-      description: caption,
-      lyrics: instrumental ? "" : (chatLyrics || lyrics),
-      instrumental,
-    });
+    if (!writingConfigured) {
+      setKeysOpen(true); setLogsOpen(false); setSystemOpen(false);
+      setChatError("Save a Writing key in KEYS first — Easy mode runs on it.");
+      return;
+    }
+    if (!beginWriting()) return;
+    const writingEpoch = writingEpochRef.current;
+    const epoch = chatEpoch.current;
+    setChatBusy(true);
+    setChatPhase("writing");
+    try {
+      const styled = await assistWriting({
+        action: "describe",
+        idea,
+        title: "",
+        language: lyricsLanguage,
+        instrumental,
+      });
+      if (epoch !== chatEpoch.current) return;
+      const caption = (styled.description || "").trim();
+      if (!caption) throw new Error("Music description writing returned an empty result.");
+      setDescription(caption);
+      setChatStyle(caption);
+      setCaptionRefs(styled.references || "");
+
+      if (instrumental) {
+        setChatPhase("starting");
+        await startGeneration({ title: "", description: caption, lyrics: "", instrumental: true, seed: null });
+        return;
+      }
+
+      setChatPhase("lyrics");
+      const song = await assistWriting({
+        action: "generate",
+        random: true,
+        idea,
+        title: "",
+        description: caption,
+        language: lyricsLanguage,
+      });
+      if (epoch !== chatEpoch.current) return;
+      const written = (song.lyrics || "").trim();
+      const nextTitle = (song.title || "").trim();
+      if (!written) throw new Error("Lyrics writing returned an empty result.");
+      setLyrics(written);
+      setChatLyrics(written);
+      if (nextTitle) setTitle(nextTitle);
+      setChatPhase("starting");
+      await startGeneration({ title: nextTitle, description: caption, lyrics: written, instrumental: false, lyricsLanguage, seed: null });
+    } catch (reason: any) {
+      if (epoch === chatEpoch.current) setChatError(reason?.message ?? String(reason));
+    } finally {
+      if (epoch === chatEpoch.current) { setChatBusy(false); setChatPhase(""); }
+      endWriting(writingEpoch);
+    }
   }
 
   // Easy mode: one conversational turn that also writes and fires the song.
@@ -1493,6 +1566,7 @@ export default function App() {
     setVocalGender(song.vocal_gender ?? "auto");
     setVoiceSlots({ female: song.voice_slots?.female || "", male: song.voice_slots?.male || "", backing: song.voice_slots?.backing || "" });
     setOpenMenu(null);
+    setCreateMode("custom");
     setStudioView("create");
     document.querySelector(".composer")?.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1587,9 +1661,8 @@ export default function App() {
       setError(REMIX_NO_SCORE);
       return;
     }
-    const generating = Boolean(generationJob && ["queued", "running"].includes(generationJob.status));
-    if (!ready || generating) {
-      setError(generating ? "Wait for the current song to finish." : blocker);
+    if (!ready) {
+      setError(blocker);
       return;
     }
     const instrumentalSong = remixTarget.instrumental || !remixKeepLyrics;
@@ -1666,9 +1739,8 @@ export default function App() {
       setError("Transcribe the recording first, then review the lead sheet.");
       return;
     }
-    const generating = Boolean(generationJob && ["queued", "running"].includes(generationJob.status));
-    if (!ready || generating) {
-      setError(generating ? "Wait for the current song to finish." : blocker);
+    if (!ready) {
+      setError(blocker);
       return;
     }
     const instrumentalSong = audioCoverTarget.instrumental || !coverKeepLyrics;
@@ -2021,7 +2093,7 @@ export default function App() {
           </div>
         </div>
         <div className="create-footer">
-          <button className="primary" disabled={!ready || writingBusy || generationSubmitRef.current || Boolean(generationJob && ["queued", "running"].includes(generationJob.status))} onClick={createSong}>Create song</button>
+          <button className="primary" disabled={!ready || writingBusy || generationSubmitRef.current} onClick={createSong}>{generationInFlight() || (status?.queue?.length ?? 0) > 0 ? "Add to queue" : "Create song"}</button>
           <button type="button" className="clear-fields-button" onClick={requestClearForm}>Clear fields</button>
           {writingBusy && <button type="button" className="danger" onClick={() => void cancelWriting()}>Stop writing</button>}
           {generationJob && ["queued", "running"].includes(generationJob.status) && <button className="danger" onClick={() => void cancelJob(generationJob.id)}>Cancel</button>}
@@ -2140,6 +2212,7 @@ export default function App() {
           <div className="lyric-avoid-shortcut"><button type="button" className="lyric-ai-button" onClick={() => setAvoidListOpen(true)}>Avoid in lyrics</button></div>
           {chatError && <div className="error">{chatError}</div>}
         </div>}
+        <QueuePanel queue={status?.queue ?? []} onCancel={(job) => void cancelQueuedJob(job)} alwaysShow />
         {!ready && <div className="truth-note">YuE2 is not ready yet. Check the installed model files and local runtime, then refresh this page.</div>}
         {error && <div className="error">{error}</div>}
       </section>
@@ -2151,6 +2224,7 @@ export default function App() {
         {librarySection === "workspaces" && !activeWorkspace && <div className="collection-grid">{workspaces.map((workspace) => <button key={workspace.id} onClick={() => setActiveWorkspaceId(workspace.id)}><span className="collection-icon workspace-icon">▣</span><strong>{workspace.name}</strong><small>{workspace.song_ids.length} songs</small></button>)}</div>}
         {(activePlaylist || activeWorkspace) && <button className="collection-back" onClick={() => { setActivePlaylistId(null); setActiveWorkspaceId(null); }}>← Back to {librarySection}</button>}
         {generationJob && <div className={`job-banner ${generationJob.status}`}><div><strong>{generationJob.phase}</strong><span>{generationJob.error || timingLabel(generationJob)}</span></div><div className="progress"><i style={{ width: `${Math.round(generationJob.progress * 100)}%` }} /></div>{generationJob.stage_progress != null && generationJob.phase.includes("thumbnail") && <div className="stage-progress"><span>Thumbnail</span><b>{Math.round(generationJob.stage_progress * 100)}%</b><div className="progress"><i style={{ width: `${Math.round(generationJob.stage_progress * 100)}%` }} /></div></div>}</div>}
+        <QueuePanel queue={status?.queue ?? []} onCancel={(job) => void cancelQueuedJob(job)} />
         {showLibrarySongs && selectedSongIds.length > 0 && <div className="bulk-bar" data-bulk-bar>
           <strong>{selectedSongIds.length} selected</strong>
           <button type="button" onClick={() => setSelectedSongIds(librarySongs.map((song) => song.id))}>Select all</button>
@@ -2196,8 +2270,8 @@ export default function App() {
               <button className="dots" aria-label={`More actions for ${song.title}`} aria-expanded={openMenu === song.id} onClick={(event) => { event.stopPropagation(); toggleSongMenu(song.id, event.currentTarget); }}>•••</button>
               {openMenu === song.id && songMenuPosition && <div className={`song-menu side-popout side-${songMenuPosition.side}`} style={{ left: songMenuPosition.left, top: songMenuPosition.top, maxHeight: songMenuPosition.maxHeight }} role="menu">
                 <button onClick={() => reuseSong(song)}><span className="menu-icon" aria-hidden="true">↻</span>Reuse as new song</button>
-                <span className="menu-tip" title={!songHasScore(song) ? REMIX_NO_SCORE : !ready ? blocker : generationJob && ["queued", "running"].includes(generationJob.status) ? "Wait for the current song to finish." : REMIX_LIMITS}><button disabled={!songHasScore(song) || !ready || Boolean(generationJob && ["queued", "running"].includes(generationJob.status))} title={!songHasScore(song) ? REMIX_NO_SCORE : !ready ? blocker : generationJob && ["queued", "running"].includes(generationJob.status) ? "Wait for the current song to finish." : REMIX_LIMITS} onClick={() => openRemix(song)}><span className="menu-icon" aria-hidden="true">⇄</span>Remix this song</button></span>
-                <span className="menu-tip" title={!status?.sheetsage?.ready ? status?.sheetsage?.detail || "Install SheetSage2 in Models to cover from audio." : COVER_LIMITS}><button disabled={!status?.sheetsage?.ready || Boolean(generationJob && ["queued", "running"].includes(generationJob.status))} title={!status?.sheetsage?.ready ? status?.sheetsage?.detail || "Install SheetSage2 in Models to cover from audio." : COVER_LIMITS} onClick={() => openAudioCover(song)}><span className="menu-icon" aria-hidden="true">♪</span>Cover from audio</button></span>
+                <span className="menu-tip" title={!songHasScore(song) ? REMIX_NO_SCORE : !ready ? blocker : REMIX_LIMITS}><button disabled={!songHasScore(song) || !ready} title={!songHasScore(song) ? REMIX_NO_SCORE : !ready ? blocker : REMIX_LIMITS} onClick={() => openRemix(song)}><span className="menu-icon" aria-hidden="true">⇄</span>Remix this song</button></span>
+                <span className="menu-tip" title={!status?.sheetsage?.ready ? status?.sheetsage?.detail || "Install SheetSage2 in Models to cover from audio." : COVER_LIMITS}><button disabled={!status?.sheetsage?.ready} title={!status?.sheetsage?.ready ? status?.sheetsage?.detail || "Install SheetSage2 in Models to cover from audio." : COVER_LIMITS} onClick={() => openAudioCover(song)}><span className="menu-icon" aria-hidden="true">♪</span>Cover from audio</button></span>
                 <button onClick={() => void openAudioEditor(song)}><span className="menu-icon" aria-hidden="true">≋</span>Open in Studio</button>
                 <button onClick={() => void openVideoStudio(song)}><span className="menu-icon" aria-hidden="true">▶</span>Make video</button>
                 <button onClick={() => editSong(song)}><span className="menu-icon" aria-hidden="true">✎</span>Edit song details</button>
@@ -2279,7 +2353,7 @@ export default function App() {
     <KeysDrawer open={keysOpen} onClose={() => setKeysOpen(false)} width={leftDrawerWidth} onResizeStart={(event) => beginDrawerResize("left", event)} />
     {rightDrawer === "job" && <aside className="right-drawer job-drawer" style={{ width: rightDrawerWidth }}><div className="drawer-resizer left" role="separator" aria-label="Resize Job panel" onPointerDown={(event) => beginDrawerResize("right", event)} /><div className="drawer-head"><div><div className="eyebrow">CURRENT JOB</div><h2>{displayJob?.kind === "yue2" ? "Song generation" : displayJob?.kind === "cover_art" ? "Cover art" : displayJob?.kind === "stems" ? "Stem extraction" : displayJob?.kind === "lyrics_sync" ? "Lyric synchronization" : displayJob?.kind === "sheetsage" ? "Cover transcription" : "Generation"}</h2></div><button onClick={() => setRightDrawer(null)}>✕</button></div>{displayJob ? <><div className={`job-banner ${displayJob.status}`}><div><strong>{displayJob.phase}</strong><span>{displayJob.error || timingLabel(displayJob)}</span></div><div className="progress"><i style={{ width: `${Math.round(displayJob.progress * 100)}%` }} /></div>{displayJob.stage_progress != null && displayJob.phase.includes("thumbnail") && <div className="stage-progress"><span>Thumbnail</span><b>{Math.round(displayJob.stage_progress * 100)}%</b><div className="progress"><i style={{ width: `${Math.round(displayJob.stage_progress * 100)}%` }} /></div></div>}</div><section className="card kv"><span>status</span><b>{displayJob.status}</b><span>progress</span><b>{Math.round(displayJob.progress * 100)}%</b><span>elapsed</span><b>{elapsedLabel(displayJob)}</b><span>remaining</span><b>{remainingLabel(displayJob) || "—"}</b><span>active jobs</span><b>{activeJobs}</b></section>{["queued", "running"].includes(displayJob.status) && <button className="danger memory" onClick={() => void cancelJob(displayJob.id)}>Cancel {displayJob.kind === "yue2" ? "generation" : "task"}</button>}</> : <div className="drawer-empty"><span>♫</span><strong>No active generation</strong><p>Your next YuE2 job will appear here with live progress and cancellation.</p></div>}</aside>}
     {rightDrawer === "details" && <aside className="right-drawer details-drawer" style={{ width: rightDrawerWidth }}><div className="drawer-resizer left" role="separator" aria-label="Resize Details panel" onPointerDown={(event) => beginDrawerResize("right", event)} /><div className="drawer-head"><div><div className="eyebrow">SONG DETAILS</div><h2>{selectedSong?.title ?? "No song selected"}</h2></div><button onClick={() => setRightDrawer(null)}>✕</button></div>{selectedSong ? <><p className="details-summary">{selectedSong.description}</p><section className="card kv"><span>artist</span><b>{selectedSong.artist || "Not set"}</b><span>album</span><b>{selectedSong.album || "Not set"}</b><span>genre</span><b>{selectedSong.genre || "Not set"}</b><span>year / track</span><b>{[selectedSong.year, selectedSong.track_number].filter(Boolean).join(" / ") || "Not set"}</b><span>type</span><b>{selectedSong.instrumental ? "Instrumental" : "Vocal"}</b><span>seed</span><b>{selectedSong.seed}</b><span>lyrics</span><b>{selectedSong.timed_lyrics?.lines?.length ? `${selectedSong.timed_lyrics.lines.length} timed lines` : "not synchronized"}</b><span>created</span><b>{selectedSong.created_at}</b></section>{selectedSong.lyrics && <section className="details-lyrics"><div className="eyebrow">LYRICS</div><pre>{selectedSong.lyrics}</pre></section>}{selectedSong.english_translation && <section className="details-lyrics"><div className="eyebrow">ENGLISH TRANSLATION</div><pre>{selectedSong.english_translation}</pre></section>}<div className="detail-actions"><button onClick={() => editSong(selectedSong)}>Edit details</button><button disabled={!status?.lyrics_sync.ready || selectedSong.instrumental} onClick={() => void startLyricsSync(selectedSong)}>{selectedSong.timed_lyrics?.lines?.length ? "Re-sync lyrics" : "Sync lyrics"}</button><button onClick={() => void openAudioEditor(selectedSong)}>Studio</button><button onClick={() => void openVideoStudio(selectedSong)}>Make video</button><button onClick={() => reuseSong(selectedSong)}>Reuse song</button><button onClick={() => downloadSong(selectedSong)}>Download WAV</button><button onClick={() => void openSongFolder(songFolderName(selectedSong))}>Open folder</button></div></> : <div className="drawer-empty"><span>♫</span><strong>Select a song</strong><p>Choose a library song to see its saved prompt, seed, lyrics, and actions.</p></div>}</aside>}
-    {rightDrawer === "mcp" && <aside className="right-drawer mcp-drawer" style={{ width: rightDrawerWidth }}><div className="drawer-resizer left" role="separator" aria-label="Resize MCP panel" onPointerDown={(event) => beginDrawerResize("right", event)} /><div className="drawer-head"><div><div className="eyebrow">MCP CONNECTIONS</div><h2>Agent activity</h2></div><button onClick={() => setRightDrawer(null)}>✕</button></div><section className={`mcp-connection ${mcpConnected ? "connected" : ""}`}><i /><div><strong>{mcpConnected ? "Codex connected" : "No MCP client connected"}</strong><span>{mcpConnected ? "Agents can use YuE2 directly; actions appear below." : "Open Codex with the YuE2 connection enabled to link an agent."}</span></div></section><div className="eyebrow">RECENT ACTIVITY</div><section className="mcp-drawer-list">{mcpActivity.length ? mcpActivity.map((item) => <article className={item.status} key={item.id}><i /><div><strong>{item.tool}</strong><span>{item.summary}</span></div><time>{new Date(item.at * 1000).toLocaleTimeString()}</time></article>) : <div className="drawer-empty"><span>⌁</span><strong>Waiting for an MCP connection</strong><p>This panel will show connected agents and every action they take in YuE2.</p></div>}</section></aside>}
+    {rightDrawer === "mcp" && <aside className="right-drawer mcp-drawer" style={{ width: rightDrawerWidth }}><div className="drawer-resizer left" role="separator" aria-label="Resize MCP panel" onPointerDown={(event) => beginDrawerResize("right", event)} /><div className="drawer-head"><div><div className="eyebrow">MCP CONNECTIONS</div><h2>Agent activity</h2></div><button onClick={() => setRightDrawer(null)}>✕</button></div><section className={`mcp-connection ${mcpConnected ? "connected" : ""}`}><i /><div><strong>{mcpConnected ? `${mcpClients.join(", ")} connected` : "No MCP client connected"}</strong><span>{mcpConnected ? "Agents can use YuE2 directly; actions appear below." : "Start an MCP-capable agent (Claude, Codex, Grok…) with the YuE2 Studio server enabled to link it."}</span></div></section><div className="eyebrow">RECENT ACTIVITY</div><section className="mcp-drawer-list">{mcpActivity.length ? mcpActivity.map((item) => <article className={item.status} key={item.id}><i /><div><strong>{item.tool}</strong><span>{item.summary}</span></div><time>{new Date(item.at * 1000).toLocaleTimeString()}</time></article>) : <div className="drawer-empty"><span>⌁</span><strong>Waiting for an MCP connection</strong><p>This panel will show connected agents and every action they take in YuE2.</p></div>}</section></aside>}
     {videoTool && <section className="tool-workspace video-tool-workspace" aria-label={`Video Studio for ${videoTool.song.title}`}><header className="tool-head"><div><div className="eyebrow">STUDIO TOOL</div><h2>Video Studio</h2><span>{videoTool.song.title} · local visualizer and MP4 renderer</span></div><button onClick={() => setVideoTool(null)}>Close</button></header><iframe ref={videoStudioFrame} title={`Video Studio — ${videoTool.song.title}`} src={videoTool.url} allow="autoplay" /></section>}
     {activeEditorSong && <SongStudio key={activeEditorSong.id} song={activeEditorSong} mixUrl={editorSource} stemJob={studioStemJob} stemsReady={Boolean(status?.stems.ready)} soundEffectsReady={Boolean(status?.sound_effects.ready)} soundEffectsDetail={status?.sound_effects.detail ?? "Sound-effects setup is not installed."} onStartStems={() => void startStudioStems()} onMixExported={() => { void refresh(); }} onClose={() => { studioStemKick.current = ""; setEditorSong(null); void refresh(); }} />}
     {templatesOpen && <div className="modal-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) setTemplatesOpen(false); }}>
@@ -2384,7 +2458,7 @@ export default function App() {
         {!remixTarget.instrumental && <label className="switch remix-keep"><input type="checkbox" checked={remixKeepLyrics} onChange={(event) => setRemixKeepLyrics(event.target.checked)} /><span />Keep the lyrics</label>}
         <p className="modal-note">{remixKeepLyrics && !remixTarget.instrumental ? "The original words are sung again. Change the style box to steer genre, voice, and instruments." : "No lyric sheet is sent. YuE2 will invent English-like phonemes."}</p>
         {error && <div className="error">{error}</div>}
-        <div className="modal-actions"><button onClick={() => setRemixTarget(null)}>Cancel</button><button className="primary" disabled={libraryBusy || !ready || !remixStyle.trim() || Boolean(generationJob && ["queued", "running"].includes(generationJob.status))} onClick={() => void startRemix()}>{libraryBusy ? "Starting…" : "Generate remix"}</button></div>
+        <div className="modal-actions"><button onClick={() => setRemixTarget(null)}>Cancel</button><button className="primary" disabled={libraryBusy || !ready || !remixStyle.trim()} onClick={() => void startRemix()}>{libraryBusy ? "Starting…" : "Generate remix"}</button></div>
       </section>
     </div>}
     {audioCoverTarget && <div className="modal-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget && utilityJob?.kind !== "sheetsage") setAudioCoverTarget(null); }}>
@@ -2403,7 +2477,7 @@ export default function App() {
         {!audioCoverTarget.instrumental && <label className="switch remix-keep"><input type="checkbox" checked={coverKeepLyrics} onChange={(event) => setCoverKeepLyrics(event.target.checked)} /><span />Keep the lyrics</label>}
         <p className="modal-note">{coverKeepLyrics && !audioCoverTarget.instrumental ? "The original words are sung again. Change the style box to steer genre, voice, and instruments." : "No lyric sheet is sent. YuE2 will invent English-like phonemes."}</p>
         {error && <div className="error">{error}</div>}
-        <div className="modal-actions"><button onClick={() => setAudioCoverTarget(null)}>Cancel</button><button className="primary" disabled={libraryBusy || !ready || !coverAbc.trim() || !coverStyle.trim() || Boolean(generationJob && ["queued", "running"].includes(generationJob.status))} onClick={() => void startAudioCoverGenerate()}>{libraryBusy ? "Starting…" : "Generate cover"}</button></div>
+        <div className="modal-actions"><button onClick={() => setAudioCoverTarget(null)}>Cancel</button><button className="primary" disabled={libraryBusy || !ready || !coverAbc.trim() || !coverStyle.trim()} onClick={() => void startAudioCoverGenerate()}>{libraryBusy ? "Starting…" : "Generate cover"}</button></div>
       </section>
     </div>}
     {stemTarget && <div className="modal-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget && utilityJob?.kind !== "stems") setStemTarget(null); }}>

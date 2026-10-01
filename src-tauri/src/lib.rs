@@ -301,9 +301,10 @@ async fn import_effect_audio(file_path: String, name: String) -> Result<SidecarH
 
 /// How long the host will wait on the sidecar before giving up.
 ///
-/// Cloud writing calls are the slow ones; the backend already caps itself at 90s
-/// per model call, so this only has to be comfortably above that.
-const SIDECAR_TIMEOUT: Duration = Duration::from_secs(180);
+/// Cloud writing calls are the slow ones. The backend caps each model call at
+/// 90s (150s for NVIDIA's free tier) and may retry a draft that fails validation,
+/// so this must stay comfortably above a couple of slow calls.
+const SIDECAR_TIMEOUT: Duration = Duration::from_secs(480);
 
 #[tauri::command]
 async fn sidecar_http(method: String, path: String, body: Option<String>, content_type: Option<String>) -> Result<SidecarHttpResult, String> {
