@@ -8,7 +8,7 @@ const end=source.indexOf('  async function writeSong',start);
 assert.ok(start>0&&end>start);
 const effect=ts.transpile(source.slice(start,end),{target:ts.ScriptTarget.ES2022});
 function fixture(code=effect){let deps,cleanup,timer;let next;const added=new Set();const errors=[];const song={id:'done',folder_name:'done',title:'Finished song'};
- const scope={on:true,job:{id:'job',kind:'yue2',status:'running',progress:.97925},liveEpochRef:{current:0},submitting:{current:true},
+ const scope={withLiveDeadline:operation=>operation,radio:{state:{paused:false},reserve(){}},queueRef:{current:[]},saveRadio(){},pauseGeneration(reason){errors.push(reason)},on:true,job:{id:'job',kind:'yue2',status:'running',progress:.97925},liveEpochRef:{current:0},submitting:{current:true},
  window:{setInterval(fn){timer=fn;return 1},clearInterval(){timer=null}},
  useEffect(fn,newDeps){if(!deps||newDeps.some((x,i)=>x!==deps[i])){cleanup?.();deps=newDeps;cleanup=fn()}},
  getJob:async()=>({job:next}),getLibrary:async()=>({items:[song]}),

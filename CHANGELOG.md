@@ -5,6 +5,8 @@ All notable changes to YuE2 Studio are documented here. The same notes are used 
 ## [Unreleased]
 
 ### Added
+- **Live jukebox fallback.** Writing credits/quota or generation failures pause new requests while current audio and ready songs continue. Past library songs shuffle once per cycle; missing/corrupt files are skipped. Resume generation explicitly after resolving the problem. Live excludes raw errors and private panels from broadcast capture.
+- **MCP 1.1.0 adapters.** Nineteen tools expose advanced YuE2 controls, planned ABC, Stable/Woosh effects, stems, lyric synchronization, cover art/transcription, audio export and typed Studio mixing with validated payloads and readiness checks.
 - **Shared song queue.** Several people (for example the studio PC and a browser on the home network) can queue songs at the same time; they are made one after another on the GPU. The Create page and Library show the line with each song's owner, position (**Up next**, **Waiting in line · N ahead of you**) and live progress. Anyone can keep clicking **Add to queue**. Each browser picks a display name. Only the person who queued a song, or the studio PC, can cancel it. The library refreshes for everyone when any song finishes.
 
 - **Keys → Writing model dropdown.** The Model box now lists the models the chosen provider actually offers (live from NVIDIA NIM, OpenAI, Groq, xAI, Anthropic, Gemini, or your Local LLM server), with song-friendly picks under **Recommended** and image/speech/embedding/safety models hidden. **Type a model ID…** still allows any ID; a warning shows when a typed ID isn't in the provider's list.

@@ -453,3 +453,8 @@
 @media (max-width: 1100px) {
   .live-reels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.live-operator { margin-top: 1rem; color: var(--muted); font-size: .85rem; }
+.live-operator summary { cursor: pointer; }
+.live-operator p { margin: .75rem 0; }
+.live-operator small { display: block; margin-top: .5rem; }

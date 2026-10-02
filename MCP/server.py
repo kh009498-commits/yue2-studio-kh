@@ -12,6 +12,8 @@ import threading
 import uuid
 from typing import Any
 
+from tool_schema import SERVER_VERSION, GENERATE_PROPERTIES, EFFECT_PROPERTIES, MIX_PROPERTIES, SLOTS, ACTION_REQUIRED, input_schema, validate_value
+
 BASE_URL = os.environ.get("YUE2_STUDIO_URL", "http://127.0.0.1:7794").rstrip("/")
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -43,22 +45,85 @@ TOOLS = [
     ("studio_status", "Read Studio readiness, installed features, GPU status, and recent jobs.", {}),
     ("list_songs", "List every song in the Studio library.", {}),
     ("get_song", "Get one song by its folder_name, including metadata, lyrics, score, and assets.", {"folder": {"type": "string"}}),
-    ("generate_song", "Queue a YuE2 song generation in the visible Studio job queue. Rejects titles/lyrics that use the Studio lyric ban list.", {"description": {"type": "string", "description": "Structured music description."}, "title": {"type": "string"}, "lyrics": {"type": "string"}, "instrumental": {"type": "boolean"}, "artist": {"type": "string"}, "genre": {"type": "string"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200}, "seed": {"type": "integer"}}),
+    ("generate_song", "Queue local YuE2 audio with optional score planning, ABC, profiles, language, exclusions and sampling controls. Live lyric bans and readiness are enforced; returns the original job id, never retries a submission.", GENERATE_PROPERTIES),
     ("get_job", "Read the live progress of a Studio job.", {"job_id": {"type": "string"}}),
     ("clear_memory", "Unload YuE2 models from VRAM. Studio refuses while any song job is queued or running.", {}),
     ("cancel_job", "Cancel a queued or running Studio job.", {"job_id": {"type": "string"}}),
     ("update_song", "Update editable metadata and lyrics for a library song.", {"folder": {"type": "string"}, "title": {"type": "string"}, "artist": {"type": "string"}, "album": {"type": "string"}, "genre": {"type": "string"}, "year": {"type": "string"}, "track_number": {"type": "string"}, "description": {"type": "string"}, "lyrics": {"type": "string"}, "lyrics_language": {"type": "string"}}),
     ("rate_song", "Set a library song rating from 0 through 5.", {"folder": {"type": "string"}, "rating": {"type": "integer", "minimum": 0, "maximum": 5}}),
     ("playlists", "List playlists, create one, or add/remove a song. action is list, create, add, or remove.", {"action": {"type": "string", "enum": ["list", "create", "add", "remove"]}, "name": {"type": "string"}, "playlist_id": {"type": "string"}, "song_id": {"type": "string"}}),
-    ("voices", "List voice profiles, create a profile, or compile chosen slots into a generation prompt. action is list, create, or compile.", {"action": {"type": "string", "enum": ["list", "create", "compile"]}, "profile": {"type": "object"}, "slots": {"type": "object"}, "description": {"type": "string"}, "lyrics": {"type": "string"}}),
+    ("voices", "List voice profiles, create a profile, or compile chosen slots into a generation prompt. action is list, create, or compile.", {"action": {"type": "string", "enum": ["list", "create", "compile"]}, "profile": {"type": "object"}, "slots": SLOTS, "snapshots": {"type": "array", "items": {"type": "object"}}, "description": {"type": "string"}, "lyrics": {"type": "string"}}),
     ("write_song", "Use Studio's configured writing provider to generate, optimize, title, describe, compose, or translate song text.", {"action": {"type": "string", "enum": ["generate", "optimize", "title", "describe", "compose", "translate"]}, "idea": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "lyrics": {"type": "string"}, "language": {"type": "string"}, "instrumental": {"type": "boolean"}}),
-    ("effects", "List sound effects or queue a generated sound effect. action is list or generate.", {"action": {"type": "string", "enum": ["list", "generate"]}, "prompt": {"type": "string"}, "name": {"type": "string"}, "duration": {"type": "number"}}),
+    ("effects", "List effects, generate via Stable CPU or Woosh GPU, or add an existing effect to Studio. Woosh unloads YuE2, supports <=5 seconds, and is CC-BY-NC. Optional folder generates directly into that song's Studio.", EFFECT_PROPERTIES),
+    ("extract_stems", "Queue installed local Demucs separation (2: vocals/accompaniment, 4: vocals/drums/bass/other); returns a job id. Does not install models.", {"folder": {"type": "string"}, "mode": {"type": "string", "enum": ["2", "4"], "default": "2"}}),
+    ("synchronize_lyrics", "Queue alignment of an existing vocal song's saved lyrics. Requires installed lyric-sync models; returns a job id.", {"folder": {"type": "string"}}),
+    ("regenerate_cover", "Queue a new local square cover image for an existing song. Replaces the saved cover on success; returns a job id.", {"folder": {"type": "string"}, "direction": {"type": "string", "maxLength": 1200}}),
+    ("transcribe_cover", "Queue installed SheetSage2 transcription of a library recording to an ABC score. This does not generate a new cover performance; pass the resulting score to generate_song. SheetSage2 is CC-BY-NC.", {"folder": {"type": "string"}, "melody_only": {"type": "boolean", "default": True}, "reuse_cached": {"type": "boolean", "default": True}}),
+    ("export_audio", "Convert a library song to tagged MP3 or FLAC using installed FFmpeg. Synchronous: returns filename/download_url, not a job. Replaces an existing song.mp3 or song.flac export.", {"folder": {"type": "string"}, "format": {"type": "string", "enum": ["mp3", "flac"]}}),
+    ("studio_mix", "Save a complete explicit track session or synchronously bounce supplied tracks to WAV and save their session state. Read get_song first for track/source names. A full custom bounce creates a new library take; selections and instrumental/acapella variants return a mix download. No browser video rendering.", MIX_PROPERTIES),
 ]
 REQUIRED = {
     "get_song": ["folder"], "generate_song": ["description"], "get_job": ["job_id"],
     "cancel_job": ["job_id"], "update_song": ["folder", "title"], "rate_song": ["folder", "rating"],
     "write_song": ["action"],
+    "extract_stems": ["folder"], "synchronize_lyrics": ["folder"], "regenerate_cover": ["folder"],
+    "transcribe_cover": ["folder"], "export_audio": ["folder", "format"],
+    "studio_mix": ["action", "folder", "tracks"],
 }
+
+def tool_specs() -> list[dict]:
+    """Canonical machine-readable interface, also usable without starting Studio."""
+    return [{"name": name, "description": desc, "inputSchema": input_schema(name, props, REQUIRED.get(name, []))} for name, desc, props in TOOLS]
+
+
+def validate_arguments(tool: str, args: dict) -> None:
+    spec = next((item for item in tool_specs() if item["name"] == tool), None)
+    if spec is None:
+        raise ValueError("Unknown tool")
+    validate_value(args, spec["inputSchema"], tool)
+    for field in ACTION_REQUIRED.get(tool, {}).get(args.get("action", "list"), []):
+        if field not in args:
+            raise ValueError(f"{tool}.{field}: required for this action")
+    if tool == "generate_song" and str(args.get("abc_score") or "").strip() and args.get("cot_mode", "full") == "off":
+        raise ValueError("An ABC score requires Full or Melody planning mode.")
+    if tool == "studio_mix":
+        if args["action"] == "save" and any(key in args for key in ("variant", "selection", "content_end")):
+            raise ValueError("variant, selection and content_end apply only to bounce.")
+        regions = [args["selection"]] if args.get("selection") else []
+        for track in args["tracks"]:
+            regions.extend(track.get("cuts", []) + track.get("effects", []))
+            for clip in track.get("clips", []):
+                if clip.get("source_out") is not None and clip["source_out"] <= clip.get("source_in", 0):
+                    raise ValueError("Clip source_out must be after source_in.")
+        if any(region["end"] <= region["start"] for region in regions):
+            raise ValueError("Range end must be after start.")
+
+
+def require_ready(feature: str, engine: str | None = None) -> None:
+    state = request("GET", "/api/status").get(feature) or {}
+    if engine:
+        state = (state.get("models") or {}).get(engine) or (state if engine == "stable" else {})
+    flag = "online" if feature == "service" else "ready"
+    if not state.get(flag):
+        raise RuntimeError(state.get("detail") or f"{engine or feature} is not ready. Inspect studio_status; no job was submitted.")
+
+
+def effect_payload(args: dict) -> dict:
+    engine = args.get("engine", "stable")
+    body = {key: args[key] for key in EFFECT_PROPERTIES if key in args and key not in {"action", "folder", "effect_id"}}
+    body.setdefault("engine", engine)
+    body.setdefault("duration", 5)
+    body.setdefault("steps", 32 if engine == "woosh" else 8)
+    body.setdefault("sampler", "dopri5" if engine == "woosh" else "pingpong")
+    if engine == "woosh" and body["duration"] > 5:
+        raise ValueError("Woosh supports at most 5 seconds; shorten the request or choose Stable.")
+    allowed = {"dopri5", "euler"} if engine == "woosh" else {"pingpong", "euler", "rk4", "dpmpp"}
+    if body["sampler"] not in allowed:
+        raise ValueError("The selected sampler is not supported by this effect engine.")
+    if engine == "stable" and body.get("negative_prompt"):
+        raise ValueError("Stable ignores negative prompts; describe the desired sound in prompt or choose Woosh.")
+    return body
+
 
 def emit(message: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
@@ -102,14 +167,22 @@ def ban_list_violations(title: str, lyrics: str) -> list[str]:
     return list(dict.fromkeys(lyric_preferences.violations(title, avoid) + lyric_preferences.violations(lyrics, avoid)))
 
 def call(tool: str, a: dict[str, Any]) -> Any:
+    validate_arguments(tool, a)
     if tool == "studio_status": return request("GET", "/api/status")
     if tool == "clear_memory": return request("POST", "/api/clear-memory")
     if tool == "list_songs": return request("GET", "/api/library")
-    if tool == "get_song": return next((x for x in request("GET", "/api/library")["items"] if x.get("folder_name") == a["folder"]), None) or (_ for _ in ()).throw(RuntimeError("Song not found"))
+    if tool == "get_song":
+        song = next((x for x in request("GET", "/api/library")["items"] if x.get("folder_name") == a["folder"]), None)
+        if song is None:
+            raise RuntimeError("Song not found")
+        score = request("GET", "/api/library/" + seg(a["folder"]) + "/score")
+        return {**song, "planned_abc_score": score.get("abc", ""), "has_score": bool(score.get("has_score"))}
     if tool == "generate_song":
+        require_ready("service")
         banned = ban_list_violations(a.get("title", ""), a.get("lyrics", ""))
         if banned: raise RuntimeError("Title or lyrics use banned words/phrases: " + "; ".join(banned) + ". Revise them with different concrete imagery and resubmit.")
-        return request("POST", "/api/generate", {"description": a["description"], "title": a.get("title", ""), "lyrics": a.get("lyrics", ""), "instrumental": a.get("instrumental", False), "artist": a.get("artist", ""), "genre": a.get("genre", ""), "steps": a.get("steps", 32), "seed": a.get("seed")})
+        body = {key: a[key] for key in GENERATE_PROPERTIES if key in a}
+        return request("POST", "/api/generate", body)
     if tool == "get_job": return request("GET", "/api/jobs/" + seg1(a["job_id"]))
     if tool == "cancel_job": return request("POST", "/api/jobs/" + seg1(a["job_id"]) + "/cancel")
     if tool == "update_song":
@@ -127,11 +200,37 @@ def call(tool: str, a: dict[str, Any]) -> Any:
         action = a.get("action", "list")
         if action == "list": return request("GET", "/api/voices?archived=true")
         if action == "create": return request("POST", "/api/voices", a.get("profile", {}))
-        return request("POST", "/api/voices/compile", {"slots": a.get("slots", {}), "description": a.get("description", ""), "lyrics": a.get("lyrics", "")})
+        return request("POST", "/api/voices/compile", {"slots": a.get("slots", {}), "description": a.get("description", ""), "lyrics": a.get("lyrics", ""), "snapshots": a.get("snapshots", [])})
     if tool == "write_song": return request("POST", "/api/assist/writing", {"action": a["action"], "idea": a.get("idea", ""), "title": a.get("title", ""), "description": a.get("description", ""), "lyrics": a.get("lyrics", ""), "language": a.get("language", "en"), "instrumental": a.get("instrumental", False)}, timeout=600)
     if tool == "effects":
-        if a.get("action", "list") == "list": return request("GET", "/api/effects")
-        return request("POST", "/api/effects/generate", {"prompt": a["prompt"], "name": a.get("name", ""), "duration": a.get("duration", 5)})
+        action = a.get("action", "list")
+        if action == "list": return request("GET", "/api/effects")
+        if action == "add_to_studio":
+            return request("POST", f"/api/effects/{seg1(a['effect_id'])}/add-to-studio/{seg(a['folder'])}")
+        body = effect_payload(a)
+        require_ready("sound_effects", body["engine"])
+        path = "/api/library/" + seg(a["folder"]) + "/studio/generate-sfx" if a.get("folder") else "/api/effects/generate"
+        return request("POST", path, body)
+    if tool in {"extract_stems", "synchronize_lyrics", "regenerate_cover", "transcribe_cover"}:
+        feature, suffix, fields = {
+            "extract_stems": ("stems", "stems", ("mode",)),
+            "synchronize_lyrics": ("lyrics_sync", "lyrics-sync", ()),
+            "regenerate_cover": ("cover_art", "cover", ("direction",)),
+            "transcribe_cover": ("sheetsage", "cover-transcribe", ("melody_only", "reuse_cached")),
+        }[tool]
+        require_ready(feature)
+        body = {key: a[key] for key in fields if key in a} if fields else None
+        return request("POST", "/api/library/" + seg(a["folder"]) + "/" + suffix, body)
+    if tool == "export_audio":
+        require_ready("exports")
+        return request("POST", "/api/library/" + seg(a["folder"]) + "/export/" + a["format"], timeout=600)
+    if tool == "studio_mix":
+        body = {key: a[key] for key in ("tracks", "variant", "selection", "content_end") if key in a}
+        path = "/api/library/" + seg(a["folder"]) + "/studio"
+        if a["action"] == "save":
+            return request("PATCH", path, body)
+        require_ready("exports")
+        return request("POST", path + "/bounce", body, timeout=600)
     raise RuntimeError(f"Unknown tool: {tool}")
 
 SESSION_ID = uuid.uuid4().hex
@@ -179,10 +278,10 @@ def main() -> None:
                     client = str(((msg.get("params") or {}).get("clientInfo") or {}).get("name") or "")
                     AGENT_NAME = _friendly_client(client)
                 start_heartbeat()
-                emit({"jsonrpc": "2.0", "id": ident, "result": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "yue2-studio", "version": "1.0.0"}}})
+                emit({"jsonrpc": "2.0", "id": ident, "result": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "yue2-studio", "version": SERVER_VERSION}}})
             elif method == "notifications/initialized": pass
             elif method == "tools/list":
-                tools = [{"name": name, "description": desc, "inputSchema": {"type": "object", "properties": props, "required": REQUIRED.get(name, [])}} for name, desc, props in TOOLS]
+                tools = tool_specs()
                 emit({"jsonrpc": "2.0", "id": ident, "result": {"tools": tools}})
             elif method == "tools/call":
                 name = msg["params"]["name"]; args = msg["params"].get("arguments", {})

@@ -2026,17 +2026,17 @@ export default function App() {
 
     <main className="studio-shell">
       <nav className="edge-tabs left-edge" aria-label="Local utility panels">
-        <button className={logsOpen ? "active" : ""} onClick={() => { setLogsOpen((open) => !open); setSystemOpen(false); setKeysOpen(false); }}><span>{[..."LOGS"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
+        <button disabled={studioView === "live"} title="Private panels are unavailable during Live" className={logsOpen ? "active" : ""} onClick={() => { setLogsOpen((open) => !open); setSystemOpen(false); setKeysOpen(false); }}><span>{[..."LOGS"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
         <i />
-        <button className={keysOpen ? "active" : ""} onClick={() => { setKeysOpen((open) => !open); setLogsOpen(false); setSystemOpen(false); }}><span>{[..."KEYS"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
+        <button disabled={studioView === "live"} title="Private panels are unavailable during Live" className={keysOpen ? "active" : ""} onClick={() => { setKeysOpen((open) => !open); setLogsOpen(false); setSystemOpen(false); }}><span>{[..."KEYS"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
         <i />
-        <button className={systemOpen ? "active" : ""} onClick={() => { setSystemOpen((open) => !open); setLogsOpen(false); setKeysOpen(false); }}><span>{[..."SYSTEM"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
+        <button disabled={studioView === "live"} title="Private panels are unavailable during Live" className={systemOpen ? "active" : ""} onClick={() => { setSystemOpen((open) => !open); setLogsOpen(false); setKeysOpen(false); }}><span>{[..."SYSTEM"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
         <i />
-        <button className={`mcp-rail-button ${mcpConnected ? "connected" : ""} ${rightDrawer === "mcp" ? "active" : ""}`} title={mcpConnected ? "MCP connected" : "MCP not connected"} onClick={() => { setRightDrawer(rightDrawer === "mcp" ? null : "mcp"); setLogsOpen(false); setKeysOpen(false); setSystemOpen(false); }}><span>{[..."MCP"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
+        <button disabled={studioView === "live"} title="Private panels are unavailable during Live" className={`mcp-rail-button ${mcpConnected ? "connected" : ""} ${rightDrawer === "mcp" ? "active" : ""}`} onClick={() => { setRightDrawer(rightDrawer === "mcp" ? null : "mcp"); setLogsOpen(false); setKeysOpen(false); setSystemOpen(false); }}><span>{[..."MCP"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
         <i />
-        <button className={rightDrawer === "job" ? "active" : ""} onClick={() => { setRightDrawer(rightDrawer === "job" ? null : "job"); setLogsOpen(false); setKeysOpen(false); setSystemOpen(false); }}><span>{[..."JOB"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
+        <button disabled={studioView === "live"} title="Private panels are unavailable during Live" className={rightDrawer === "job" ? "active" : ""} onClick={() => { setRightDrawer(rightDrawer === "job" ? null : "job"); setLogsOpen(false); setKeysOpen(false); setSystemOpen(false); }}><span>{[..."JOB"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
         <i />
-        <button className={rightDrawer === "details" ? "active" : ""} onClick={() => { setRightDrawer(rightDrawer === "details" ? null : "details"); setLogsOpen(false); setKeysOpen(false); setSystemOpen(false); }}><span>{[..."DETAILS"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
+        <button disabled={studioView === "live"} title="Private panels are unavailable during Live" className={rightDrawer === "details" ? "active" : ""} onClick={() => { setRightDrawer(rightDrawer === "details" ? null : "details"); setLogsOpen(false); setKeysOpen(false); setSystemOpen(false); }}><span>{[..."DETAILS"].map((letter, index) => <b key={`${letter}-${index}`}>{letter}</b>)}</span></button>
       </nav>
 
       <section className={`composer main-view ${studioView === "create" ? "active" : ""}`}>
@@ -2059,7 +2059,7 @@ export default function App() {
                 </div>
                 <small>Fills in the title, the full structured description, and tagged lyrics. Edit anything afterwards.</small>
               </label>
-              {composeError && <p className="caption-ai-error">{composeError}</p>}
+              {studioView !== "live" && composeError && <p className="caption-ai-error">{composeError}</p>}
             </section>
             <div className="song-identity-grid"><label>Song title<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled Song" /></label><label>Artist name<input value={artist} onChange={(event) => setArtist(event.target.value)} placeholder="Your artist or band name" /></label></div>
             <label>Music description<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={10} placeholder="Genre, tempo/key, mood progression, voice, arrangement and production…" />
@@ -2210,11 +2210,11 @@ export default function App() {
             </div>
           </div>
           <div className="lyric-avoid-shortcut"><button type="button" className="lyric-ai-button" onClick={() => setAvoidListOpen(true)}>Avoid in lyrics</button></div>
-          {chatError && <div className="error">{chatError}</div>}
+          {studioView !== "live" && chatError && <div className="error">{chatError}</div>}
         </div>}
         <QueuePanel queue={status?.queue ?? []} onCancel={(job) => void cancelQueuedJob(job)} alwaysShow />
         {!ready && <div className="truth-note">YuE2 is not ready yet. Check the installed model files and local runtime, then refresh this page.</div>}
-        {error && <div className="error">{error}</div>}
+        {studioView !== "live" && error && <div className="error">{error}</div>}
       </section>
 
       <section className={`library-pane main-view ${studioView === "library" ? "active" : ""}`}>
@@ -2315,6 +2315,7 @@ export default function App() {
 
     </main>
 
+    {studioView !== "live" && <>
     {systemOpen && <aside className="system-drawer left-drawer" style={{ width: leftDrawerWidth }}><div className="drawer-resizer right" role="separator" aria-label="Resize System panel" onPointerDown={(event) => beginDrawerResize("left", event)} />
       <div className="drawer-head"><div><div className="eyebrow">SYSTEM</div><h2>Local resources</h2></div><button aria-label="Close System" onClick={() => setSystemOpen(false)}>✕</button></div>
       <button className={`memory memory-top ${status?.service.worker_loaded ? "memory-loaded" : "memory-empty"}`} disabled={activeJobs > 0 || !status?.service.worker_loaded} onClick={() => void clearMemory().then(refresh).catch((reason) => setError(reason.message))}>{status?.service.worker_loaded ? "Clear VRAM and Cache" : "VRAM and Cache Clear"}</button>
@@ -2490,5 +2491,6 @@ export default function App() {
         </>}
       </section>
     </div>}
+    </>}
   </div>;
 }

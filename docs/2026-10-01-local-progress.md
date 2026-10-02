@@ -1,6 +1,6 @@
 # YuE2 Studio local progress — 2026-10-01
 
-The authoritative working project is `F:\Kraken Media\YuE2`, version 0.7.0 with unreleased improvements. Its starting commit was `606c89048e6750d58dd420926b5a60642e46c671`; GitHub `main` was identical when checked. The `github` remote is `krakenunbound/yue2-studio`; the Hugging Face `origin` remote is not a publication destination for these changes.
+The authoritative working project is `<project-root>`, version 0.7.0 with unreleased improvements. Its starting commit was `606c89048e6750d58dd420926b5a60642e46c671`; GitHub `main` was identical when checked. The `github` remote is `krakenunbound/yue2-studio`; the Hugging Face `origin` remote is not a publication destination for these changes.
 
 ## Preserved local work
 

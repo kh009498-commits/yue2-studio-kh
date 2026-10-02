@@ -278,3 +278,7 @@ export const getLyricPreferences = () => request<{ avoid: string }>("/api/settin
 export const saveLyricPreferences = (avoid: string) => request<{ avoid: string }>("/api/settings/lyric-preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avoid }) });
 
 export const rateSong = (folder: string, rating: number) => request<{ rating: number }>(`/api/library/${encodeURIComponent(folder)}/rating`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rating }) });
+
+// Enum-only, best-effort station diagnostics. Never send provider responses.
+export const recordLiveEvent = (event: import("./liveJukebox").LiveEvent, reason: import("./liveJukebox").LiveReason) =>
+  request<{ ok: boolean }>("/api/live/events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, reason }) });

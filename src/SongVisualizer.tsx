@@ -9,9 +9,11 @@ function playbackTime(value: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-type SongVisualizerProps = { src: string; timedLyrics?: TimedLyrics | null; onEnded: () => void; eqGains?: number[]; compact?: boolean; onAnalyser?: (analyser: AnalyserNode | null) => void; onPlayingChange?: (playing: boolean) => void };
+type SongVisualizerProps = { src: string; timedLyrics?: TimedLyrics | null; onEnded: () => void; onPlaybackError?: () => void; eqGains?: number[]; compact?: boolean; onAnalyser?: (analyser: AnalyserNode | null) => void; onPlayingChange?: (playing: boolean) => void };
 
-export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, compact, onAnalyser, onPlayingChange }: SongVisualizerProps) {
+export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, compact, onAnalyser, onPlayingChange, onPlaybackError }: SongVisualizerProps) {
+  const playbackErrorRef = useRef(onPlaybackError);
+  playbackErrorRef.current = onPlaybackError;
   const audio = useRef<HTMLAudioElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const filters = useRef<BiquadFilterNode[]>([]);
@@ -41,6 +43,16 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
     let blobUrl: string | null = null;
     let cancelled = false;
     const request = new AbortController();
+    let failed = false;
+    const mediaError = () => {
+      if (cancelled || failed) return;
+      failed = true; playbackErrorRef.current?.();
+    };
+    // Missing/corrupt files cannot hold the station forever while loading.
+    let loadTimer: number | null = playbackErrorRef.current ? window.setTimeout(() => { request.abort(); mediaError(); }, 30000) : null;
+    const loaded = () => { if (loadTimer !== null) window.clearTimeout(loadTimer); loadTimer = null; };
+    element.addEventListener("error", mediaError);
+    element.addEventListener("loadeddata", loaded);
     const beginAnalysis = async () => {
       if (context) { if (context.state === "suspended") await context.resume(); return; }
       context = new AudioContext();
@@ -83,12 +95,14 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
     const start = async () => {
       try {
         const response = await fetch(src, { signal: request.signal });
+        if (cancelled || failed) return;
+        if (!response.ok) { loaded(); mediaError(); return; }
         const blob = await response.blob();
-        if (cancelled) return;
+        if (cancelled || failed) return;
         blobUrl = URL.createObjectURL(blob);
         element.src = blobUrl;
       } catch {
-        if (cancelled) return;
+        if (cancelled || failed) return;
         element.src = src;
       }
       try { await element.play(); } catch { /* autoplay can wait for the transport button */ }
@@ -99,6 +113,7 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
     void start();
     return () => {
       cancelled = true;
+      loaded(); element.removeEventListener("error", mediaError); element.removeEventListener("loadeddata", loaded);
       request.abort();
       element.pause();
       element.removeAttribute("src");

@@ -2,7 +2,7 @@
 name = "yue2-studio"
 version = "0.7.0"
 description = "A native YuE2 production studio"
-authors = ["The Kraken"]
+authors = ["YuE2 Studio contributors"]
 edition = "2021"
 
 [lib]

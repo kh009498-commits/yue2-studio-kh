@@ -5,3 +5,5 @@
 - [Screenshots](screenshots/) — extra captures as `07-….png` / `.jpg`, linked from the root README
 
 - [Current local progress and validation](2026-10-01-local-progress.md) — 0.7.0 unreleased work, independent YuE2 generation, provider defaults, and publication privacy checks
+
+- [Live jukebox behavior and validation](2026-10-02-live-jukebox.md) - stream-safe provider failure handling, shuffled playback, explicit resume and pending runtime activation

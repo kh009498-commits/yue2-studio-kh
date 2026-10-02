@@ -13,6 +13,7 @@ import atexit
 import uuid
 from collections import deque
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 import uvicorn
@@ -42,6 +43,31 @@ from origin_guard import OriginGuard
 install(LOGS_ROOT)
 log = logging.getLogger("yue2.studio")
 app = FastAPI(title="YuE2 Studio", version="0.7.0")
+
+# Bounded, enum-only private station diagnostics: no raw provider payloads.
+live_events: deque[dict] = deque(maxlen=50)
+live_events_lock = threading.Lock()
+live_event_last: dict[tuple[str, str], float] = {}
+
+
+class LiveEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event: Literal["paused", "resumed", "unplayable", "empty"]
+    reason: Literal["credits", "rate-limit", "writing", "generation", "connection", "timeout"]
+
+
+@app.post("/api/live/events")
+def record_live_event(request: LiveEventRequest):
+    now = time.monotonic()
+    key = (request.event, request.reason)
+    with live_events_lock:
+        if now - live_event_last.get(key, float("-inf")) < 30:
+            return {"ok": True}
+        live_event_last[key] = now
+        live_events.append({"at": time.time(), "event": request.event, "reason": request.reason})
+    log.info("Live station: %s (%s)", request.event, request.reason)
+    return {"ok": True}
+
 
 # The MCP process is deliberately a separate client of this local service.  Keep
 # a compact, in-memory audit trail so its actions are visible in Studio instead

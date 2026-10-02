@@ -350,7 +350,7 @@ class StudioTest(TestCase):
             (stems / "vocals.wav").write_bytes(b"stem")
             (song / "song.json").write_text(json.dumps({
                 "title": "Studio Song", "audio": "song.wav", "cover": "cover.png",
-                "artist": "The Kraken", "stems": ["vocals.wav"],
+                "artist": "Test Artist", "stems": ["vocals.wav"],
             }), encoding="utf-8")
             request = main.StudioBounceRequest(variant="custom", tracks=[main.StudioTrackState(name="vocals.wav")])
 
@@ -373,7 +373,7 @@ class StudioTest(TestCase):
         self.assertFalse((song / "studio" / "original_mix.wav").exists())
         # The export is a real, separate library entry carrying the song's identity.
         self.assertEqual(b"wet-mix", exported_audio)
-        self.assertEqual("The Kraken", exported["artist"])
+        self.assertEqual("Test Artist", exported["artist"])
         self.assertEqual("cover.png", exported["cover"])
         self.assertEqual("song-one", exported["studio_source"])
         self.assertEqual(["Studio Song", "Studio Song (Studio Mix)"], titles)
