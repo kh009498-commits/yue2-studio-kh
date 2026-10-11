@@ -11,6 +11,7 @@ import ai_models
 from fastapi.testclient import TestClient
 
 NVIDIA_IDS = [
+    "openai/gpt-oss-20b", "nvidia/nemotron-3.5-lightning-30b-a3b",
     "deepseek-ai/deepseek-v4.1-flash", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "moonshotai/kimi-k3",
     "nvidia/nv-embedqa-mistral-7b-v2", "meta/llama-guard-4-12b", "bigcode/starcoder2-15b",
     "nvidia/nvclip", "google/deplot", "nvidia/nemotron-4-340b-reward", "mistralai/mistral-large",
@@ -29,9 +30,9 @@ def test_nvidia_list_hides_non_writers_and_puts_song_models_first():
     with patch.object(ai_models, "_get_json", side_effect=fake_get_json), \
          patch.object(ai_models.ai_vault, "load", return_value={"providers": {}}):
         result = ai_models.list_models("nvidia")
-    assert result["recommended"] == ["deepseek-ai/deepseek-v4.1-flash", "z-ai/glm-5.3-flash", "z-ai/glm-5.3", "moonshotai/kimi-k3"]
+    assert result["recommended"] == ["openai/gpt-oss-20b", "nvidia/nemotron-3.5-lightning-30b-a3b", "deepseek-ai/deepseek-v4.1-flash", "z-ai/glm-5.3-flash", "z-ai/glm-5.3", "moonshotai/kimi-k3"]
     assert result["models"] == ["mistralai/mistral-large"]
-    assert result["default"] == "deepseek-ai/deepseek-v4.1-flash"
+    assert result["default"] == "openai/gpt-oss-20b"
 
 
 def test_key_providers_ask_for_a_key_instead_of_calling_out():

@@ -6,7 +6,7 @@ DEFAULT_MODELS = {
     "groq": "llama-3.3-70b-versatile",
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-sonnet-4-5",
-    "nvidia": "deepseek-ai/deepseek-v4.1-flash",
+    "nvidia": "openai/gpt-oss-20b",
     "ollama": "gemma3:4b",
 }
 

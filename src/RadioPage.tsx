@@ -4,6 +4,8 @@ import EqPanel from "./EqPanel";
 import KaraokeLyrics from "./KaraokeLyrics";
 import { EQ_BANDS as BANDS } from "./eqProfiles";
 import useAutoEq from "./useAutoEq";
+import { eqHeadroomGain } from "./eqHeadroom";
+import { RADIO_FILTERS_KEY, emptyRadioFilters, loadRadioFilters, filterRadioSongs, radioFilterOptions, type RadioFilters } from "./radioFilters";
 
 function radioSrc(song: Song) {
   const path = song.audio_url.split("?")[0];
@@ -67,8 +69,14 @@ type Props = {
 export default function RadioPage({ songs, releasingSongIds, playlists, workspaces, coverSources, coverArtReady, lyricsSyncReady, lyricsSyncBusy, onSyncLyrics, onRateSong, onLeaveLibraryPlay, onAddToPlaylist, onNewPlaylistForSong, onEditSong, onGenerateCover, onDeleteSong }: Props) {
   const audio = useRef<HTMLAudioElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const graph = useRef<{ context: AudioContext; source: MediaElementAudioSourceNode; filters: BiquadFilterNode[]; analyser: AnalyserNode } | null>(null);
+  const graph = useRef<{ context: AudioContext; source: MediaElementAudioSourceNode; preamp: GainNode; filters: BiquadFilterNode[]; analyser: AnalyserNode } | null>(null);
   const [sourceKey, setSourceKey] = useState(() => localStorage.getItem("yue2-radio-source") || "all");
+  const [stationFilters, setStationFilters] = useState<RadioFilters>(() => {
+    try { return loadRadioFilters(localStorage.getItem(RADIO_FILTERS_KEY)); } catch { return emptyRadioFilters(); }
+  });
+  const [filterDraft, setFilterDraft] = useState<RadioFilters | null>(null);
+  const filterDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (filterDraft && filterDialog.current && !filterDialog.current.open) filterDialog.current.showModal(); }, [filterDraft]);
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -87,7 +95,7 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
   const wantPlay = useRef(false);
   const pendingPlayId = useRef<string | null>(null);
 
-  const queue = useMemo(() => {
+  const sourceSongs = useMemo(() => {
     if (sourceKey.startsWith("playlist:")) {
       const list = playlists.find((item) => item.id === sourceKey.slice(9));
       const ids = new Set(list?.song_ids || []);
@@ -100,6 +108,26 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
     }
     return songs;
   }, [songs, playlists, workspaces, sourceKey]);
+  const queue = useMemo(() => filterRadioSongs(sourceSongs, stationFilters), [sourceSongs, stationFilters]);
+  const genreOptions = useMemo(() => radioFilterOptions(songs, "genre"), [songs]);
+  const languageOptions = useMemo(() => radioFilterOptions(songs, "language"), [songs]);
+  const filterCount = stationFilters.genres.length + stationFilters.languages.length + stationFilters.kinds.length + Number(Boolean(stationFilters.search));
+
+  function changeFilters(next: RadioFilters) {
+    const nextQueue = filterRadioSongs(sourceSongs, next);
+    const nextIndex = nextQueue.findIndex(song => song.id === current?.id);
+    // Preserve playback when the current song still matches. Otherwise pause
+    // before changing the queue, so an unrelated replacement never auto-starts.
+    if (nextIndex < 0) { wantPlay.current = false; pendingPlayId.current = null; audio.current?.pause(); }
+    setActionSongId(null);
+    setIndex(Math.max(0, nextIndex));
+    setStationFilters(next);
+    try { localStorage.setItem(RADIO_FILTERS_KEY, JSON.stringify(next)); } catch { /* keep in memory */ }
+  }
+  function toggleFilter(group: "genres" | "languages" | "kinds", value: string, checked: boolean) {
+    if (!filterDraft) return;
+    setFilterDraft({ ...filterDraft, [group]: checked ? [...filterDraft[group], value] : filterDraft[group].filter(item => item !== value) });
+  }
 
   const current = queue[Math.min(index, Math.max(0, queue.length - 1))] || null;
   const releasing = Boolean(current && releasingSongIds?.includes(current.id));
@@ -115,7 +143,7 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
     const closeGraph = () => {
       const oldGraph = graph.current;
       graph.current = null;
-      try { oldGraph?.source.disconnect(); oldGraph?.analyser.disconnect(); } catch { /* already disconnected */ }
+      try { oldGraph?.source.disconnect(); oldGraph?.preamp.disconnect(); oldGraph?.filters.forEach(filter => filter.disconnect()); oldGraph?.analyser.disconnect(); } catch { /* already disconnected */ }
       oldGraph?.context.close().catch(() => undefined);
     };
     closeGraph();
@@ -161,10 +189,13 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
         const analyser = context.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.82;
-        source.connect(filters[0]);
+        const preamp = context.createGain();
+        preamp.gain.value = eqHeadroomGain(filters, context.sampleRate);
+        source.connect(preamp);
+        preamp.connect(filters[0]);
         filters.forEach((filter, band) => filter.connect(filters[band + 1] || analyser));
         analyser.connect(context.destination);
-        graph.current = { context, source, filters, analyser };
+        graph.current = { context, source, preamp, filters, analyser };
         setEqLive(true);
         void context.resume();
       } catch (reason) {
@@ -187,7 +218,10 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
   }, [current?.id]);
 
   useEffect(() => {
-    graph.current?.filters.forEach((filter, band) => { filter.gain.value = displayGains[band] ?? 0; });
+    const active = graph.current;
+    if (!active) return;
+    active.filters.forEach((filter, band) => { filter.gain.value = displayGains[band] ?? 0; });
+    active.preamp.gain.value = eqHeadroomGain(active.filters, active.context.sampleRate);
   }, [displayGains]);
 
   useEffect(() => {
@@ -310,14 +344,20 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
     <div className="radio-layout">
       <aside className="radio-queue card">
         <label>Source
-          <select value={sourceKey} onChange={(event) => { setSourceKey(event.target.value); setIndex(0); }}>
+          <select value={sourceKey} onChange={(event) => { wantPlay.current = false; pendingPlayId.current = null; audio.current?.pause(); setActionSongId(null); setSourceKey(event.target.value); setIndex(0); }}>
             <option value="all">All songs</option>
             {workspaces.map((space) => <option key={space.id} value={`workspace:${space.id}`}>{space.name} (workspace)</option>)}
             {playlists.map((list) => <option key={list.id} value={`playlist:${list.id}`}>{list.name} (playlist)</option>)}
           </select>
         </label>
+        <div className="radio-refine-bar">
+          <input aria-label="Search station" type="search" value={stationFilters.search} placeholder="Search tracks…" onChange={event => changeFilters({ ...stationFilters, search: event.target.value })} />
+          <button type="button" className={filterCount ? "radio-refine-button selected" : "radio-refine-button"} onClick={() => setFilterDraft({ ...stationFilters })}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /><circle cx="8" cy="7" r="2" fill="currentColor" /><circle cx="16" cy="12" r="2" fill="currentColor" /><circle cx="10" cy="17" r="2" fill="currentColor" /></svg>Filters{filterCount > 0 && <span>{filterCount}</span>}</button>
+        </div>
+        {filterCount > 0 && <div className="radio-active-filters"><span>{[...stationFilters.genres.map(value => genreOptions.find(option => option.value === value)?.label || value), ...stationFilters.languages.map(value => languageOptions.find(option => option.value === value)?.label || value), ...stationFilters.kinds.map(value => value === "vocal" ? "Vocal" : "Instrumental")].join(" · ") || "Search active"}</span><button type="button" aria-label="Clear station filters" title="Clear filters" onClick={() => changeFilters(emptyRadioFilters())}>×</button></div>}
+        <div className="radio-match-count">{queue.length} tracks{filterCount ? " · of " + sourceSongs.length + " in source" : ""}</div>
         <div className="radio-track-list">
-          {queue.length === 0 && <p className="modal-note">No songs in this source yet. Generate some in Create, or add tracks to a playlist.</p>}
+          {queue.length === 0 && <p className="modal-note">{sourceSongs.length ? "No songs match these filters. Clear filters or choose different options." : "No songs in this source yet. Generate some in Create, or add tracks to a playlist."}</p>}
           {queue.map((song, songIndex) => <div className="radio-track-row" key={song.id}>
             <button type="button" className={`radio-track ${song.id === current?.id ? "active" : ""}`} onClick={() => { setActionSongId(null); startTrack(songIndex); }}>
               <img src={coverSources[song.id] || ""} alt="" />
@@ -375,7 +415,7 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
               : <p className="modal-note">{current.lyrics?.trim() ? "Sync this song to see its lyrics highlighted during playback." : "This song has no saved lyrics. Add them in Edit details to enable synchronization."}</p>)}
             {!lyricsSyncReady && <p className="modal-note">Install Whisper lyrics and karaoke in Models to synchronize this song.</p>}
           </section>}
-        </> : <div className="empty"><strong>Station is empty</strong><p>Make a song or pick a playlist with tracks.</p></div>}
+        </> : <div className="empty"><strong>{sourceSongs.length ? "No matching songs" : "Station is empty"}</strong><p>{sourceSongs.length ? "Change or clear the station filters to find tracks." : "Make a song or pick a playlist with tracks."}</p></div>}
         {error && <div className="error">{error}</div>}
       </div>
       <aside className="radio-eq card">
@@ -383,5 +423,15 @@ export default function RadioPage({ songs, releasingSongIds, playlists, workspac
         <EqPanel autoEq={autoEq} setAutoEq={setAutoEq} autoPreset={autoPreset} preset={preset} displayGains={displayGains} applyPreset={applyPreset} setBand={setBand} note={eqLive ? autoEq ? `Auto EQ is live · ${autoPreset}; sliders glide on track changes. Custom sliders save on this machine.` : "Manual EQ is live on this track. Custom sliders save on this machine." : "EQ stays idle over the network so the first Play starts immediately. Sound uses the same stream as Library. Custom sliders save on this machine."} />
       </aside>
     </div>
+    {filterDraft && <dialog ref={filterDialog} className="radio-filter-dialog" aria-labelledby="radio-filter-title" onCancel={() => setFilterDraft(null)} onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setFilterDraft(null); } }}>
+      <div className="radio-filter-heading"><div><div className="eyebrow">YOUR STATION</div><h2 id="radio-filter-title">Find your sound</h2><p>A few choices. A station that feels like yours.</p></div><button type="button" aria-label="Close filters" autoFocus onClick={() => setFilterDraft(null)}>×</button></div>
+      <div className="radio-filter-body">
+        {[{key: "kinds" as const, title: "Voices", options: [{value: "vocal", label: "Vocal"}, {value: "instrumental", label: "Instrumental"}]}, {key: "genres" as const, title: "Genre & style", options: genreOptions}, {key: "languages" as const, title: "Language", options: languageOptions}].map(group => <section className="radio-filter-group" key={group.key} aria-label={group.title}>
+          <div className="radio-filter-group-heading"><h3>{group.title}</h3><span>{filterDraft[group.key].length ? filterDraft[group.key].length + " selected" : "Any"}</span></div>
+          <div className="radio-filter-choices">{group.options.map(option => <label className={filterDraft[group.key].includes(option.value) ? "radio-filter-choice checked" : "radio-filter-choice"} key={option.value}><input type="checkbox" checked={filterDraft[group.key].includes(option.value)} onChange={event => toggleFilter(group.key, option.value, event.target.checked)} /><span className="radio-choice-mark" aria-hidden="true">✓</span><span>{option.label}</span></label>)}</div>
+        </section>)}
+      </div>
+      <div className="radio-filter-bottom"><div><strong>{filterRadioSongs(sourceSongs, filterDraft).length}</strong><span> matching tracks</span><small>Choose several. Leave a group empty for any.</small></div><div className="radio-filter-buttons"><button type="button" onClick={() => setFilterDraft({ ...emptyRadioFilters(), search: filterDraft.search })}>Reset</button><button type="button" className="primary" onClick={() => { changeFilters(filterDraft); setFilterDraft(null); }}>Apply filters</button></div></div>
+    </dialog>}
   </section>;
 }

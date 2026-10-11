@@ -42,7 +42,7 @@ from origin_guard import OriginGuard
 
 install(LOGS_ROOT)
 log = logging.getLogger("yue2.studio")
-app = FastAPI(title="YuE2 Studio", version="0.7.0")
+app = FastAPI(title="YuE2 Studio", version="0.8.0")
 
 # Bounded, enum-only private station diagnostics: no raw provider payloads.
 live_events: deque[dict] = deque(maxlen=50)
@@ -224,6 +224,7 @@ async def quiet_expected_windows_disconnects() -> None:
     loop.set_exception_handler(handle_exception)
 
 class GenerateRequest(BaseModel):
+    template_id: str = Field(default="", max_length=240)
     title: str = Field(default="", max_length=120)
     artist: str = Field(default="", max_length=160)
     album: str = Field(default="", max_length=160)
@@ -996,6 +997,7 @@ def generate(job: Job) -> dict:
         metadata = {
             "id": job.id, "title": request["title"], "description": request["description"],
             "artist": request.get("artist", ""), "album": request.get("album", ""),
+            "template_id": request.get("template_id", ""),
             "genre": request.get("genre", ""), "year": time.strftime("%Y"), "track_number": "",
             "lyrics": lyrics_sync.normalize_lyrics(request.get("lyrics") or ""), "instrumental": request["instrumental"],
             "seed": request["seed"], "duration": engine_result["duration"],
@@ -1399,7 +1401,13 @@ def list_ai_models(request: AiModelsRequest):
 @app.put("/api/settings/ai-keys")
 def put_ai_keys(request: AiKeysUpdate):
     try:
-        return ai_vault.apply_update(request.model_dump())
+        previous = ai_vault.load()["capabilities"]["writing"].copy()
+        result = ai_vault.apply_update(request.model_dump())
+        writing = result["capabilities"]["writing"]
+        if writing != previous:
+            log.info("Writing settings saved: provider=%s model=%s enabled=%s",
+                     writing["provider"], writing["model"], writing["enabled"])
+        return result
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
 

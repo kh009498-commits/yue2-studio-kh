@@ -24,7 +24,9 @@ Saving a Gemini key does not replace local YuE2. It never generates the song. To
 
 ## Writing models
 
-Keys → Writing lists the chosen provider's current writing models, with recommended choices first and an option to type a model ID. Switching providers resets the model instead of carrying another provider's ID across. Blank IDs use that provider's default. NVIDIA NIM defaults to `deepseek-ai/deepseek-v4.1-flash`; the retired `minimaxai/minimax-m3` choice migrates to that default. Custom IDs are preserved except known defaults inherited from a different provider.
+Keys → Writing lists the chosen provider's current writing models, with recommended choices first and an option to type a model ID. Switching providers resets the model instead of carrying another provider's ID across. Blank IDs use that provider's default. NVIDIA NIM defaults to `openai/gpt-oss-20b`, with low reasoning effort for responsive writing. Nemotron Lightning is also recommended. The retired `minimaxai/minimax-m3` choice migrates to the default. Other custom IDs are preserved except known defaults inherited from a different provider.
+
+The Logs panel records writing settings changes and the provider/model at request start, then a waiting update every 15 seconds. Request IDs link the start, waiting and outcome entries. Completion, empty responses, timeouts, HTTP errors and cancellation are distinct. Operation results also report final validation failures after repairs. These entries contain elapsed time and output length, never API keys, prompts, generated lyrics or provider response bodies.
 
 Writing helpers generate text only. YuE2 generates all song audio locally; there is no MiniMax music fallback. A provider error is reported rather than sending the request to another provider. Available models and provider pricing can change; refresh the list before selecting one.
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { TimedLyrics } from "./api";
 import KaraokeLyrics from "./KaraokeLyrics";
 import { EQ_BANDS } from "./eqProfiles";
+import { eqHeadroomGain } from "./eqHeadroom";
 
 function playbackTime(value: number) {
   if (!Number.isFinite(value) || value < 0) return "0:00";
@@ -17,6 +18,7 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
   const audio = useRef<HTMLAudioElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const filters = useRef<BiquadFilterNode[]>([]);
+  const eqPreamp = useRef<GainNode | null>(null);
   const eqGainsRef = useRef(eqGains);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -28,6 +30,7 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
   useEffect(() => {
     eqGainsRef.current = eqGains;
     filters.current.forEach((filter, band) => { filter.gain.value = eqGains?.[band] ?? 0; });
+    if (eqPreamp.current) eqPreamp.current.gain.value = eqHeadroomGain(filters.current, eqPreamp.current.context.sampleRate);
   }, [eqGains]);
 
   useEffect(() => {
@@ -37,6 +40,7 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
     let analyser: AnalyserNode | null = null;
     let source: MediaElementAudioSourceNode | null = null;
     let eqFilters: BiquadFilterNode[] = [];
+    let preamp: GainNode | null = null;
     let data = new Uint8Array(64);
     const paint = surface.getContext("2d");
     let frame = 0;
@@ -69,7 +73,11 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
         return filter;
       }) : [];
       if (eqFilters.length) {
-        source.connect(eqFilters[0]);
+        preamp = context.createGain();
+        preamp.gain.value = eqHeadroomGain(eqFilters, context.sampleRate);
+        eqPreamp.current = preamp;
+        source.connect(preamp);
+        preamp.connect(eqFilters[0]);
         eqFilters.forEach((filter, band) => filter.connect(eqFilters[band + 1] || analyser));
       } else source.connect(analyser);
       filters.current = eqFilters;
@@ -121,9 +129,10 @@ export default function SongVisualizer({ src, timedLyrics, onEnded, eqGains, com
       element.removeEventListener("play", beginAnalysis);
       cancelAnimationFrame(frame);
       filters.current = [];
+      eqPreamp.current = null;
       onAnalyser?.(null);
       onPlayingChange?.(false);
-      try { source?.disconnect(); eqFilters.forEach((filter) => filter.disconnect()); analyser?.disconnect(); } catch { /* already disconnected */ }
+      try { source?.disconnect(); preamp?.disconnect(); eqFilters.forEach((filter) => filter.disconnect()); analyser?.disconnect(); } catch { /* already disconnected */ }
       if (context) void context.close();
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };

@@ -22,6 +22,6 @@ export default function EqPanel({ autoEq, setAutoEq, autoPreset, preset, display
         <span>{label}</span>
       </label>)}
     </div>
-    <p className="modal-note">{note}</p>
+    <p className="modal-note">{note} EQ boosts automatically reduce playback gain to leave headroom.</p>
   </div>;
 }

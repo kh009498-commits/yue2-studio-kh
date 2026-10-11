@@ -23,6 +23,8 @@ from writing_models import DEFAULT_MODELS
 # Shown first ("Recommended") when the provider still lists them.
 RECOMMENDED: dict[str, tuple[str, ...]] = {
     "nvidia": (
+        "openai/gpt-oss-20b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
         "deepseek-ai/deepseek-v4.1-flash",
         "z-ai/glm-5.3-flash",
         "z-ai/glm-5.3",

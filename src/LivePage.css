@@ -458,3 +458,19 @@
 .live-operator summary { cursor: pointer; }
 .live-operator p { margin: .75rem 0; }
 .live-operator small { display: block; margin-top: .5rem; }
+
+.live-selection { margin-bottom: 1rem; padding: 1rem; }
+.live-selection > summary { cursor: pointer; font-weight: 600; }
+.live-selection-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: 1rem 0; }
+.live-selection-tools label { display: flex; align-items: center; gap: .5rem; }
+.live-selection p { color: var(--muted); font-size: .85rem; line-height: 1.5; }
+.live-selection-empty { padding: .6rem; border: 1px solid var(--border); border-radius: .5rem; }
+.live-selection .live-grid { max-height: 420px; overflow: auto; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.live-selection label.live-card { cursor: pointer; opacity: 1; grid-template-columns: 20px 40px minmax(0, 1fr); border: 1px solid rgba(117,128,180,.25); border-radius: 9px; }
+.live-selection .live-card input { position: static; width: 1rem; height: 1rem; accent-color: #79cbbb; }
+.live-selection .live-card.excluded img { opacity: .4; }
+.live-selection .live-card.included { outline: 1px solid #79cbbb; }
+.live-unclassified { margin-top: 1rem; }
+.live-approval-list { max-height: 240px; overflow: auto; }
+.live-approval-list label { display: flex; gap: .6rem; align-items: center; padding: .45rem 0; }
+.live-approval-list small { display: block; opacity: .65; }

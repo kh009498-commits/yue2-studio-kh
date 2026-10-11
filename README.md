@@ -55,7 +55,7 @@ npm run build
 npm run tauri build -- --no-bundle
 ```
 
-The project version is 0.7.0. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+The project version is 0.8.0. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Licenses and upstream work
 

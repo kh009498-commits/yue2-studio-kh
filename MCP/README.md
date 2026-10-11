@@ -16,7 +16,7 @@ Available tools cover status, songs, generation and jobs, song editing and ratin
 
 ## Local MCP 1.1.0 interface
 
-The application remains 0.7.0; the stdio bridge interface is 1.1.0 with 19 tools. Existing tool names remain available. `get_song` adds the actual planned ABC score, `generate_song` exposes native advanced controls, and `effects` selects Stable or Woosh. Added adapters: `extract_stems`, `synchronize_lyrics`, `regenerate_cover`, `transcribe_cover`, `export_audio`, and `studio_mix`. Read the skill for mutation/output behavior and engine limitations.
+The application remains 0.8.0; the stdio bridge interface is 1.1.0 with 19 tools. Existing tool names remain available. `get_song` adds the actual planned ABC score, `generate_song` exposes native advanced controls, and `effects` selects Stable or Woosh. Added adapters: `extract_stems`, `synchronize_lyrics`, `regenerate_cover`, `transcribe_cover`, `export_audio`, and `studio_mix`. Read the skill for mutation/output behavior and engine limitations.
 
 `server.tool_specs()` returns canonical JSON input schemas without launching Studio or starting MCP heartbeats. Schemas live in `tool_schema.py`; stdio `tools/list` uses the same data. No credential/provider-settings or installation tools exist. Requests are validated before submission, including action requirements and engine/planning constraints. Backend readiness checks remain authoritative if capability state changes after preflight.
 

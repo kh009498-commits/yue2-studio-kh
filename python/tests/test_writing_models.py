@@ -44,6 +44,14 @@ def test_nvidia_payload_uses_shared_default_without_fallback():
     payload = json.loads(call.call_args.args[0].data)
     assert payload['model'] == DEFAULT_MODELS['nvidia']
     assert call.call_count == 1
+    assert payload['reasoning_effort'] == 'low'
+
+
+def test_nvidia_other_models_do_not_receive_gpt_oss_reasoning_option():
+    with patch.object(ai_assist, '_http', return_value={'choices': [{'message': {'content': 'draft'}}]}) as call:
+        ai_assist._openai_compat('nvidia', 'vendor/custom-writer', 'test-only', 'system', 'user')
+    import json
+    assert 'reasoning_effort' not in json.loads(call.call_args.args[0].data)
 
 
 def test_native_caption_endpoint_does_not_load_legacy_corpus():

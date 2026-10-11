@@ -1,4 +1,6 @@
 export type StylePreset = {
+  id?: string;
+  nightEligible?: boolean;
   genre: string;
   tempo: string;
   mood: string;

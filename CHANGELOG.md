@@ -2,9 +2,11 @@
 
 All notable changes to YuE2 Studio are documented here. The same notes are used for GitHub releases.
 
-## [Unreleased]
+## [0.8.0] — 2026-10-10
 
 ### Added
+- **Radio filters.** Search and combine multiple genres, languages, and vocal/instrumental choices in a compact filter dialog. Selections persist and apply to playback and shuffle within the selected source.
+- **Live Night / Chill selection.** Additional templates and persisted template selection guide automatic generation and eligible catalog playback.
 - **Live jukebox fallback.** Writing credits/quota or generation failures pause new requests while current audio and ready songs continue. Past library songs shuffle once per cycle; missing/corrupt files are skipped. Resume generation explicitly after resolving the problem. Live excludes raw errors and private panels from broadcast capture.
 - **MCP 1.1.0 adapters.** Nineteen tools expose advanced YuE2 controls, planned ABC, Stable/Woosh effects, stems, lyric synchronization, cover art/transcription, audio export and typed Studio mixing with validated payloads and readiness checks.
 - **Shared song queue.** Several people (for example the studio PC and a browser on the home network) can queue songs at the same time; they are made one after another on the GPU. The Create page and Library show the line with each song's owner, position (**Up next**, **Waiting in line · N ahead of you**) and live progress. Anyone can keep clicking **Add to queue**. Each browser picks a display name. Only the person who queued a song, or the studio PC, can cancel it. The library refreshes for everyone when any song finishes.
@@ -15,15 +17,17 @@ All notable changes to YuE2 Studio are documented here. The same notes are used 
 - The local service now only accepts commands from Studio itself (the desktop window, pages served by Studio on this PC or the home-network address). Other websites open in a browser can no longer control Studio in the background, and DNS-rebinding hosts are refused.
 
 ### Fixed
-- Writing vault normalization and API updates now use provider-specific defaults, repair known inherited IDs, and migrate the retired NVIDIA MiniMax model to DeepSeek. Custom model IDs remain supported.
+- **Global EQ tuning.** Gentler presets preserve deep bass while reducing muddiness. Playback gain accounts for the combined filter response to leave headroom across Radio, Library, and Live, including custom sliders.
+- **Writing responsiveness and logs.** NVIDIA GPT-OSS uses low reasoning effort; compatible Nemotron requests disable thinking. Logs identify the actual provider, model, action, request ID, elapsed time, waiting state, completion, and failure without recording keys or prompts.
+- Writing vault normalization and API updates now use provider-specific defaults, repair known inherited IDs, and migrate the retired NVIDIA MiniMax model to the current NVIDIA default. Custom model IDs remain supported.
 - YuE2 no longer imports the inherited caption corpus. The compatibility statistics route reports it disabled; installer payloads exclude dormant Music3 workers and caption assets. Song generation remains exclusively YuE2.
 - Credential audits cover all saved provider keys, with values withheld; private settings, old executable backups, and Windows shortcuts stay excluded from source publication.
-- Sidecar API metadata now reports the current 0.7.0 application version.
+- Sidecar API metadata now reports the current 0.8.0 application version.
 - MCP server: song folders with spaces (most of the library) now work with `update_song`/`rate_song`; replies are always UTF-8 on Windows (non-English characters previously broke the reply for every MCP client); the connected agent's name (Claude, Codex, Grok) labels its activity and queued songs.
 - NVIDIA NIM's free tier gets 150s per writing call instead of 90s (lyrics took 82–98s in testing), and the desktop bridge waits up to 480s. Timeouts now name the real provider instead of "Local LLM timed out".
 - Job-starting endpoints return the song's queue position immediately.
 - Switching the Writing provider no longer keeps the previous provider's model (e.g. `gemini-3.6-flash` under NVIDIA NIM).
-- The default NVIDIA NIM model `minimaxai/minimax-m3` was retired from NVIDIA's catalog; the default is now `deepseek-ai/deepseek-v4.1-flash`.
+- The default NVIDIA NIM model `minimaxai/minimax-m3` was retired from NVIDIA's catalog; the default is now `openai/gpt-oss-20b`, tested against the live NVIDIA service.
 - Finished jobs are trimmed (last 150 kept) so the job list no longer grows for the life of the process.
 
 ## [0.7.0] — 2026-09-19

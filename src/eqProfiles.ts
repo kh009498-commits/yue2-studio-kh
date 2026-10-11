@@ -6,15 +6,17 @@ export const EQ_FLAT = EQ_BANDS.map(() => 0);
 
 export const EQ_PRESETS: Record<string, number[]> = {
   Flat: EQ_FLAT,
-  Bass: [7, 5, 3, 1, 0, 0, -1, -2, -2, -1],
-  Treble: [-2, -2, -1, 0, 0, 1, 3, 5, 6, 6],
-  Vocal: [-3, -2, 0, 2, 4, 3, 1, 0, -1, -2],
-  Electronic: [5, 4, 1, -2, -2, 0, 2, 3, 4, 5],
-  Rock: [4, 3, 1, 0, -2, 0, 2, 3, 4, 3],
-  Jazz: [3, 2, 0, -2, -2, -1, 0, 2, 3, 4],
-  Acoustic: [3, 2, 0, 1, 2, 1, 0, 2, 3, 2],
-  Night: [4, 3, 1, -3, -4, -2, 0, 1, 3, 2],
-  Loudness: [6, 4, 0, -3, -4, -2, 0, 2, 4, 5],
+  // Subtle tonal choices for mastered music; playback compensates for the
+  // combined filter boost. Bass avoids boosting the muddy 125–250 Hz region.
+  Bass: [3, 2, 0, -1, 0, 0, 0, 1, 1, 1],
+  Treble: [-1, -1, 0, 0, 0, 0, 1, 2, 2, 2],
+  Vocal: [-1, -1, 0, 1, 2, 1, 1, 0, 0, -1],
+  Electronic: [2, 2, 0, -1, -1, 0, 1, 1, 2, 2],
+  Rock: [2, 1, 0, 0, -1, 0, 1, 2, 1, 1],
+  Jazz: [1, 1, 0, -1, -1, 0, 0, 1, 1, 1],
+  Acoustic: [0, 0, 0, 1, 1, 0, 0, 1, 1, 0],
+  Night: [1, 1, 0, 0, 0, 0, -1, -1, -2, -2],
+  Loudness: [2, 1, 0, -1, -1, 0, 0, 1, 2, 1],
 };
 
 export function automaticPreset(song: Song | null) {

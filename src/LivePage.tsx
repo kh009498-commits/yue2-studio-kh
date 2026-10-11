@@ -10,6 +10,7 @@ import useAutoEq from "./useAutoEq";
 import "./LivePage.css";
 import { LiveJukebox, LIVE_STORAGE_KEY, LIVE_REASON_LABELS, liveFailureReason, playableSong, withLiveDeadline, type LiveReason } from "./liveJukebox";
 import { recordLiveEvent } from "./api";
+import { LIVE_SELECTION_KEY, NIGHT_GUIDANCE, NIGHT_EXCLUSIONS, loadLiveSelection, selectedTemplates, templateId, templateEnabled, songTemplate, songEligible, vocalPreference, selectTemplates, approvedSongs, type LiveSelection } from "./liveSelection";
 import castInstrumental from "./assets/live/instrumental.png";
 import castFemale from "./assets/live/female.png";
 import castMale from "./assets/live/male.png";
@@ -63,7 +64,7 @@ function liveSrc(song: Song) {
   return `${window.location.origin}${path}`;
 }
 
-function liveDescription(preset: StylePreset, instrumental: boolean, slots?: { female: string; male: string }) {
+function liveDescription(preset: StylePreset, instrumental: boolean, slots?: { female: string; male: string }, night = false) {
   const parts = [preset.genre];
   if (instrumental) parts.push(INSTRUMENTAL_LOCK);
   else {
@@ -71,18 +72,20 @@ function liveDescription(preset: StylePreset, instrumental: boolean, slots?: { f
     if (preset.delivery) parts.push(preset.delivery);
   }
   parts.push(preset.arrangement, preset.mood, preset.tempo, preset.production);
+  if (night) parts.push(NIGHT_GUIDANCE);
   return parts.filter(Boolean).join(", ");
 }
 
-function randomPick(names: string[], profiles: VoiceProfile[], avoid: string[] = []): Pick {
+function randomPick(names: string[], profiles: VoiceProfile[], avoid: string[] = [], preference: "mixed" | "prefer" | "only" = "mixed", presets: Record<string, StylePreset> = {}): Pick {
   const blocked = new Set(avoid);
   const pool = names.filter((name) => !blocked.has(name));
   const choices = pool.length ? pool : names;
-  const cast = randomCast();
+  const template = choices[Math.floor(Math.random() * choices.length)];
+  const cast = preference === "only" || presets[template]?.instrumental || (preference === "prefer" && Math.random() < 0.8) ? "instrumental" : randomCast();
   const slots = randomSlots(cast, profiles);
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    template: choices[Math.floor(Math.random() * choices.length)],
+    template,
     instrumental: cast === "instrumental",
     cast,
     female: slots.female,
@@ -95,7 +98,43 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   // by completing a song. It must not tear down the in-flight job poll.
   const refreshRef = useRef(onRefresh);
   refreshRef.current = onRefresh;
-  const names = useMemo(() => Object.keys(presets), [presets]);
+  const presetsRef = useRef(presets); presetsRef.current = presets;
+  const allNames = useMemo(() => Object.keys(presets), [presets]);
+  const [selection, setSelection] = useState<LiveSelection>(() => {
+    let raw: string | null = null;
+    try { raw = localStorage.getItem(LIVE_SELECTION_KEY); } catch { /* private window */ }
+    return loadLiveSelection(raw);
+  });
+  const selectionRef = useRef(selection); selectionRef.current = selection;
+  const names = useMemo(() => selectedTemplates(presets, selection), [presets, selection]);
+  const eligibleSongs = useMemo(() => songs.filter(song => songEligible(song, presets, selection)), [songs, presets, selection]);
+  const unclassified = useMemo(() => songs.filter(song => playableSong(song) && !songTemplate(song, presets)), [songs, presets]);
+  const eligibleSongsRef = useRef(eligibleSongs); eligibleSongsRef.current = eligibleSongs;
+  const preference = vocalPreference(selection);
+  const displayNames = selection.mode === "night" ? [...allNames].sort((a, b) =>
+    Number(templateEnabled(b, presets[b], selection)) - Number(templateEnabled(a, presets[a], selection)) || a.localeCompare(b)) : allNames;
+  function allowedPick(pick: Pick) {
+    const preset = presets[pick.template];
+    return Boolean(preset && templateEnabled(pick.template, preset, selectionRef.current) && (vocalPreference(selectionRef.current) !== "only" || pick.instrumental));
+  }
+  function choose(avoid: string[] = []) {
+    return randomPick(selectedTemplates(presets, selectionRef.current), voices, avoid, vocalPreference(selectionRef.current), presets);
+  }
+  function applySelection(next: LiveSelection) {
+    selectionRef.current = next; setSelection(next);
+    try { localStorage.setItem(LIVE_SELECTION_KEY, JSON.stringify(next)); } catch { /* retain in memory */ }
+    generationEpochRef.current += 1;
+    replacePending([]); preparedRef.current = null;
+    if (drawTimerRef.current !== null) window.clearInterval(drawTimerRef.current);
+    drawTimerRef.current = null; picking.current = false;
+    // A submitted job finishes, but its result must pass the latest eligibility
+    // check. Writing already in flight is discarded before any GPU submission.
+    if (!generating && requestCount.current === 0) { submitting.current = false; setActivePick(null); }
+    setWritingPhase("");
+    const allowed = new Set(songs.filter(song => songEligible(song, presets, next)).map(song => song.id));
+    queueRef.current = [...queueRef.current.slice(0, indexRef.current + 1), ...queueRef.current.slice(indexRef.current + 1).filter(id => allowed.has(id))];
+    setQueue(queueRef.current);
+  }
   const [voices, setVoices] = useState<VoiceProfile[]>([]);
   const [on, setOn] = useState(false);
   const [flash, setFlash] = useState<Pick | null>(null);
@@ -121,6 +160,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   const [outstandingRequests, setOutstandingRequests] = useState(0);
   const [resumeChecking, setResumeChecking] = useState(false);
   const [resumeNote, setResumeNote] = useState("");
+  const [prefetchRevision, setPrefetchRevision] = useState(0);
   const requestCount = useRef(0);
   const generationEpochRef = useRef(0);
   const [playSequence, setPlaySequence] = useState(0);
@@ -156,7 +196,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
     refillIfStarving();
   }
   async function resumeGeneration() {
-    if (requestCount.current || generating || !ready || resumeChecking) return;
+    if (requestCount.current || generating || !ready || !selectedTemplates(presets, selectionRef.current).length || resumeChecking) return;
     setResumeChecking(true); setResumeNote("");
     const epoch = liveEpochRef.current;
     try {
@@ -200,7 +240,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   useEffect(() => { indexRef.current = index; }, [index]);
 
   const catalog = useMemo(() => Object.fromEntries(songs.map((song) => [song.id, song])), [songs]);
-  const catalogBuffer = useMemo(() => songs.filter((song) => playableSong(song) && (song.instrumental || Boolean(song.timed_lyrics?.lines?.length))), [songs]);
+  const catalogBuffer = useMemo(() => eligibleSongs.filter((song) => song.instrumental || Boolean(song.timed_lyrics?.lines?.length)), [eligibleSongs]);
   const catalogBufferIds = useMemo(() => new Set(catalogBuffer.map((song) => song.id)), [catalogBuffer]);
   const queuedCurrent = catalog[queue[index]];
   if (queuedCurrent) playingSongRef.current = queuedCurrent;
@@ -215,6 +255,11 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   const buffering = on && !primed && readySongs < startupTarget;
 
   useEffect(() => { catalogBufferRef.current = catalogBuffer; }, [catalogBuffer]);
+  useEffect(() => {
+    const eligible = new Set(eligibleSongs.map(song => song.id));
+    const next = [...queueRef.current.slice(0, indexRef.current + 1), ...queueRef.current.slice(indexRef.current + 1).filter(id => eligible.has(id))];
+    if (next.length !== queueRef.current.length) { queueRef.current = next; setQueue(next); }
+  }, [eligibleSongs]);
 
   useEffect(() => { onCurrentChange(current?.id ?? null); }, [current?.id, onCurrentChange]);
 
@@ -260,7 +305,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
           let library = await getLibrary();
           if (!currentTurn()) return;
           let song = library.items.find((item) => item.folder_name === folder);
-          if (song) {
+          if (song && songEligible(song, presetsRef.current, selectionRef.current)) {
             setGeneratedIds((ids) => new Set(ids).add(song!.id));
             setQueue((ids) => {
               if (ids.includes(song!.id)) return ids;
@@ -291,7 +336,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
 
   async function writeSong(preset: StylePreset, pick: Pick, announce = true) {
     const note = (phase: string) => { if (announce) setWritingPhase(phase); };
-    const description = liveDescription(preset, pick.instrumental, pick);
+    const description = liveDescription(preset, pick.instrumental, pick, selectionRef.current.mode === "night");
     try {
       if (pick.instrumental) {
         note("Requesting title");
@@ -321,7 +366,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
 
   async function submit(pick: Pick) {
     const preset = presets[pick.template];
-    if (!preset || radio.state.paused) return;
+    if (!preset || radio.state.paused || !ready || !allowedPick(pick)) return;
     const epoch = liveEpochRef.current;
     const generationEpoch = generationEpochRef.current;
     setLocked(pick);
@@ -331,16 +376,20 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
       preparedRef.current = null;
       setWritingPhase(ready ? `Title ready: ${ready.title}` : "Writing title and lyrics");
       const written = ready || await writeSong(preset, pick, true);
-      if (epoch !== liveEpochRef.current || generationEpoch !== generationEpochRef.current || radio.state.paused) return;
+      if (epoch !== liveEpochRef.current) return;
+      if (generationEpoch !== generationEpochRef.current || radio.state.paused || !allowedPick(pick)) {
+        submitting.current = false; setActivePick(null); setWritingPhase(""); return;
+      }
       const named = { ...pick, title: written.title };
       setLocked(named);
       setFlash(named);
       setWritingPhase("Ready — starting YuE2");
       failureKind = "generation";
       const submission = generate({
+        template_id: templateId(pick.template, preset),
         title: written.title,
         genre: pick.template,
-        description: liveDescription(preset, pick.instrumental, pick),
+        description: liveDescription(preset, pick.instrumental, pick, selectionRef.current.mode === "night"),
         lyrics: written.lyrics,
         lyrics_language: preset.language || "en",
         instrumental: pick.instrumental,
@@ -350,7 +399,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
         steps: 32,
         top_k: 100,
         temperature: 1.0,
-        exclude_styles: "",
+        exclude_styles: selectionRef.current.mode === "night" ? NIGHT_EXCLUSIONS : "",
         vocal_gender: vocalGenderFor(pick.cast),
         voice_slots: pick.instrumental ? EMPTY_VOICE_SLOTS : { female: pick.female, male: pick.male, backing: "" },
       });
@@ -373,7 +422,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
 
   function catalogFiller(count: number, ended = false) {
     const reserved = queueRef.current.slice(indexRef.current + (ended ? 1 : 0));
-    const pool = radio.state.paused ? allSongsRef.current : catalogBufferRef.current;
+    const pool = (radio.state.paused ? eligibleSongsRef.current : catalogBufferRef.current).filter(song => songEligible(song, presetsRef.current, selectionRef.current));
     const boundary = reserved[reserved.length - 1] || queueRef.current[indexRef.current];
     const extra = radio.draw(pool, count, reserved, boundary);
     saveRadio(); return extra;
@@ -382,7 +431,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   function refillIfStarving(ended = false) {
     const remaining = queueRef.current.length - indexRef.current - (ended ? 1 : 0);
     const target = radio.state.paused ? bufferSize : MIN_BUFFER_SIZE;
-    if (remaining >= target) return [];
+    if (!selectedTemplates(presetsRef.current, selectionRef.current).length || remaining >= target) return [];
     const extra = catalogFiller(target - remaining, ended);
     if (extra.length) {
       queueRef.current = [...queueRef.current, ...extra]; setQueue(queueRef.current);
@@ -394,7 +443,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
     const id = queueRef.current[indexRef.current];
     if (unplayable && id) { radio.block(id); event("unplayable"); }
     else if (id) radio.played(id);
-    const playable = new Set(radio.eligible(allSongsRef.current));
+    const playable = new Set(radio.eligible(eligibleSongsRef.current));
     // Preserve current audio until it ends, but remove invalid/deleted future tracks.
     queueRef.current = [...queueRef.current.slice(0, indexRef.current + 1),
       ...queueRef.current.slice(indexRef.current + 1).filter(id => playable.has(id))];
@@ -413,18 +462,18 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   }
 
   function drawAndSubmit(lockedPick: Pick) {
-    if (radio.state.paused || picking.current || !names.length) return;
+    if (radio.state.paused || !ready || !allowedPick(lockedPick) || picking.current || !names.length) return;
     const epoch = liveEpochRef.current;
     picking.current = true;
     let ticks = 0;
     const timer = window.setInterval(() => {
-      if (epoch !== liveEpochRef.current || radio.state.paused) {
+      if (epoch !== liveEpochRef.current || radio.state.paused || !allowedPick(lockedPick)) {
         window.clearInterval(timer);
         drawTimerRef.current = null;
         picking.current = false;
         return;
       }
-      setFlash(randomPick(names, voices));
+      setFlash(choose());
       ticks += 1;
       if (ticks < 16) return;
       window.clearInterval(timer);
@@ -437,7 +486,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   }
 
   useEffect(() => {
-    if (!on || radio.state.paused) return;
+    if (!on || radio.state.paused || !ready || !names.length) return;
     const desiredAhead = queue.length ? bufferSize - 1 : bufferSize;
     const reserved = ahead + (activePick ? 1 : 0) + pending.length;
     const missing = desiredAhead - reserved;
@@ -450,18 +499,18 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
       const extra: Pick[] = [];
       const blocked = [...avoid];
       for (let i = 0; i < missing; i += 1) {
-        const pick = randomPick(names, voices, blocked);
+        const pick = choose(blocked);
         extra.push(pick);
         blocked.push(pick.template);
       }
       replacePending([...pendingRef.current, ...extra]);
-    } else if (!activePick && pending.length === 0) replacePending([randomPick(names, voices, avoid)]);
-  }, [on, names, voices, queue.length, ahead, activePick, pending.length, bufferSize, catalog, index, generationPaused]);
+    } else if (!activePick && pending.length === 0) replacePending([choose(avoid)]);
+  }, [on, names, voices, queue.length, ahead, activePick, pending.length, bufferSize, catalog, index, generationPaused, ready, selection]);
 
   useEffect(() => {
     if (!on) return;
     refillIfStarving(waitingForNext);
-  }, [on, index, queue.length, generationPaused, songs, bufferSize]);
+  }, [on, index, queue.length, generationPaused, songs, bufferSize, selection]);
 
   useEffect(() => {
     if (!on || !generationPaused) return;
@@ -475,7 +524,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
   }, [on, generationPaused]);
 
   useEffect(() => {
-    if (!on || radio.state.paused) return;
+    if (!on || radio.state.paused || !ready || !names.length) return;
     const next = pending[0];
     if (!next || prefetching.current || preparedRef.current?.pick.id === next.id) return;
     if (activePick && next.id === activePick.id) return;
@@ -491,17 +540,17 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
         preparedRef.current = { pick: next, title: written.title, lyrics: written.lyrics };
       })
       .catch((reason: any) => {
-        if (epoch !== liveEpochRef.current || generationEpoch !== generationEpochRef.current) return;
+        if (epoch !== liveEpochRef.current) return;
         preparedRef.current = null;
         pauseGeneration(reason, "writing");
       })
       .finally(() => {
-        prefetching.current = false;
+        prefetching.current = false; setPrefetchRevision(value => value + 1);
       });
-  }, [on, pending, job?.id, job?.status, activePick, presets, voices, generationPaused]);
+  }, [on, pending, job?.id, job?.status, activePick, presets, voices, generationPaused, ready, selection, prefetchRevision]);
 
   useEffect(() => {
-    if (!on || radio.state.paused || activePick || picking.current || submitting.current) return;
+    if (!on || radio.state.paused || !ready || !names.length || activePick || picking.current || submitting.current) return;
     const next = pendingRef.current[0];
     if (!next) return;
     replacePending(pendingRef.current.slice(1));
@@ -510,14 +559,15 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
     submitting.current = true;
     recentTemplates.current = [...recentTemplates.current.filter((name) => name !== next.template), next.template].slice(-8);
     drawAndSubmit(next);
-  }, [on, activePick, pending.length, generationPaused]);
+  }, [on, activePick, pending.length, generationPaused, names.length, ready, selection]);
 
   function startLive() {
+    if (!selectedTemplates(presets, selectionRef.current).length) return;
     if (!voices.length) void getVoiceProfiles(false).then((result) => setVoices(result.items)).catch(() => undefined);
     setGeneratedIds(new Set());
     recentTemplates.current = [];
     preparedRef.current = null;
-    const pool = radio.state.paused ? allSongsRef.current : catalogBufferRef.current;
+    const pool = (radio.state.paused ? eligibleSongsRef.current : catalogBufferRef.current).filter(song => songEligible(song, presetsRef.current, selectionRef.current));
     queueRef.current = radio.draw(pool, bufferSize);
     saveRadio(); setQueue(queueRef.current);
     indexRef.current = 0; setIndex(0); setWaitingForNext(false);
@@ -560,6 +610,32 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
       {CAST_ROLL.map((item) => <div className={`live-wing-chip ${shown?.cast === item.id ? "on" : ""}`} key={item.id} title={item.label}><img src={CAST_ART[item.id]} alt={item.label} /></div>)}
     </aside>
     <div className="live-main">
+    <details className="live-selection card">
+      <summary>Live music · {selection.mode === "night" ? "Night / Chill" : "Custom selection"} · {names.length}/{allNames.length} templates · {eligibleSongs.length} eligible library songs</summary>
+      <div className="live-selection-tools">
+        <button type="button" onClick={() => applySelection({ ...selection, mode: "night" })}>Night / Chill</button>
+        <button type="button" onClick={() => applySelection({ ...selection, mode: "custom" })}>My custom selection</button>
+        <button type="button" onClick={() => applySelection({ ...selection, mode: "night", night: {}, nightDefault: true, nightVoices: "prefer", approved: { ...selection.approved, night: [] } })}>Reset Night preset</button>
+        <button type="button" onClick={() => applySelection(selectTemplates(selection, presets, true))}>Select all</button>
+        <button type="button" onClick={() => applySelection(selectTemplates(selection, presets, false))}>Select none</button>
+        <label>Voices<select value={preference} onChange={event => applySelection({ ...selection, [selection.mode === "night" ? "nightVoices" : "customVoices"]: event.target.value as "mixed" | "prefer" | "only" })}><option value="mixed">Mixed vocals / instrumental</option><option value="prefer">Prefer instrumental</option><option value="only">Instrumental only</option></select></label>
+      </div>
+      <p>Saved on this browser. Changes affect future draws and remove newly excluded upcoming songs. The current track finishes; a submitted job may finish but enters playback only if still eligible.</p>
+      <p>{selection.mode === "night" ? "Night / Chill adds gentle prompt guidance; edit any choice below. These tags cannot guarantee the audio is calm. Audition tracks before broadcasting." : "Custom choices are remembered separately from Night / Chill."}</p>
+      {!names.length && <p className="live-selection-empty">No templates selected. New generation and future catalog playback are stopped; choose at least one template.</p>}
+      {names.length > 0 && !eligibleSongs.length && <p className="live-selection-empty">No eligible library songs. Live can make selected songs when ready; jukebox playback waits rather than adding excluded songs.</p>}
+      <div className="live-grid">
+        {displayNames.map(name => <label key={templateId(name, presets[name])} className={`live-card ${templateEnabled(name, presets[name], selection) ? "included" : "excluded"}`}>
+          <input type="checkbox" aria-label={`Allow ${name}`} checked={templateEnabled(name, presets[name], selection)} onChange={event => applySelection({ ...selection, [selection.mode]: { ...selection[selection.mode], [templateId(name, presets[name])]: event.target.checked } })} />
+          <img src={art[name] || ""} alt="" /><span>{name}</span>
+        </label>)}
+      </div>
+      {unclassified.length > 0 && <details className="live-unclassified"><summary>{unclassified.length} unclassified library songs · explicit approval</summary>
+        <p>Missing or unrecognized template metadata is excluded in Night mode or whenever templates are filtered. Listen first, then approve individual songs. Approvals apply only to this profile and never override a known excluded template or Instrumental only.</p>
+        <div className="live-approval-list">{unclassified.map(song => <label key={song.id}><input type="checkbox" aria-label={`Approve ${song.title}`} checked={approvedSongs(selection).includes(song.id)} onChange={event => applySelection({ ...selection, approved: { ...selection.approved, [selection.mode]: event.target.checked ? [...approvedSongs(selection), song.id] : approvedSongs(selection).filter(id => id !== song.id) } })} /><span>{song.title}<small>{song.genre || "No template metadata"}</small></span></label>)}</div>
+      </details>}
+    </details>
+
     {!on && <div className="live-settings card"><label className="live-buffer-size">Keep ready<select value={bufferSize} onChange={(event) => setBufferSize(Math.max(MIN_BUFFER_SIZE, Number(event.target.value)))}><option value="3">3 songs · short</option><option value="5">5 songs · balanced</option><option value="8">8 songs · long</option><option value="12">12 songs · overnight</option></select></label><small>{catalogBuffer.length ? "Starts from the catalog, keeps generating ahead, and pulls a random catalog song if the queue would go empty. OBS can end the stream on its own clock." : "No playback-ready catalog songs found; Live will generate the starting buffer."}</small></div>}
     <div className="live-layout">
       <div className="live-stage card">
@@ -592,14 +668,14 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
         {!generationPaused && locked && presets[locked.template] && <small className="live-mood">{writingPhase || presets[locked.template].mood}</small>}
         {generating && <div className="job-banner running"><div><strong>{job?.status === "queued" ? "Song queued" : "Making the next song"}</strong><span>{Math.round((job?.progress || 0) * 100)}%</span></div></div>}
         <div className="live-actions">
-          {!on && <button type="button" className="primary" disabled={!ready && !radio.eligible(songs).length} onClick={startLive}>Start live</button>}
+          {!on && <button type="button" className="primary" disabled={!names.length || (!ready && !radio.eligible(eligibleSongs).length)} onClick={startLive}>Start live</button>}
           {on && <button type="button" className="danger" onClick={stopLive}>Stop</button>}
           <button type="button" disabled={!current} onClick={skip}>Skip</button>
         </div>
         {generationPaused && <details className="live-operator"><summary>Station controls · Jukebox</summary>
           <p>{LIVE_REASON_LABELS[pauseReason]} Generation is paused until you resume it. The selected provider is unchanged.</p>
-          <p>{radio.eligible(songs).length === 0 ? "No playable library songs are available." : radio.eligible(songs).length === 1 ? "One playable song is available; it will repeat." : "Library songs shuffle once per cycle."}</p>
-          <button type="button" disabled={outstandingRequests > 0 || generating || !ready || resumeChecking} onClick={() => void resumeGeneration()}>Resume generation</button>
+          <p>{radio.eligible(eligibleSongs).length === 0 ? "No playable library songs are available." : radio.eligible(eligibleSongs).length === 1 ? "One playable song is available; it will repeat." : "Library songs shuffle once per cycle."}</p>
+          <button type="button" disabled={outstandingRequests > 0 || generating || !ready || !names.length || resumeChecking} onClick={() => void resumeGeneration()}>Resume generation</button>
           {resumeNote && <small>{resumeNote}</small>}
           {(outstandingRequests > 0 || generating) && <small>Waiting for the outstanding request or job to finish.</small>}
         </details>}
@@ -615,7 +691,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
             <EqPanel autoEq={autoEq} setAutoEq={setAutoEq} autoPreset={autoPreset} preset={preset} displayGains={displayGains} applyPreset={applyPreset} setBand={setBand} note={autoEq ? `Auto EQ follows ${autoPreset}; sliders glide before each song. Custom sliders save on this machine.` : "Manual EQ is live on this station. Custom sliders save on this machine."} />
           </aside>
           {!on ? <div className="live-buffering">Station stopped</div> : buffering ? <div className="live-buffering">Buffering playback: {readySongs}/{startupTarget} songs ready</div> : waitingForNext ? <div className="live-buffering">Current song finished — waiting for the next buffered song</div> : <SongVisualizer key={`${current.id}:${playSequence}`} src={liveSrc(current)} timedLyrics={current.timed_lyrics} eqGains={displayGains} compact onAnalyser={onAnalyserChange} onPlayingChange={onPlaybackChange} onPlaybackError={() => advancePlayback(true)} onEnded={() => advancePlayback()} />}
-        </> : <div className="empty"><strong>{generationPaused ? "Jukebox" : "Waiting on the first song"}</strong><p>{generationPaused ? "No playable library audio is currently available." : "The station plays as soon as a draw finishes generating."}</p></div>}
+        </> : <div className="empty"><strong>{generationPaused ? "Jukebox" : "Waiting on the first song"}</strong><p>{generationPaused ? "No eligible library audio is currently available. Select templates or approve auditioned unclassified songs." : "The station plays as soon as a draw finishes generating."}</p></div>}
         {on && queue.length > 0 && <div className="live-queue">
           <div className="live-queue-head"><div className="eyebrow">PLAYBACK QUEUE</div><small>{index + 1}/{queue.length} · position</small></div>
           <div className="live-queue-list">
@@ -634,12 +710,7 @@ export default function LivePage({ ready, presets, art, songs, coverSources, onL
         </div>}
       </div>
     </div>
-    <div className="live-grid">
-      {names.map((name) => <button type="button" key={name} className={`live-card ${shown?.template === name ? "picked" : ""}`} disabled>
-        <img src={art[name] || ""} alt="" />
-        <span>{name}</span>
-      </button>)}
-    </div>
+
     </div>
     <aside className="live-wing live-wing-voices" aria-label="Voice reel">
       {[...femalePool, ...malePool.filter((profile) => !femalePool.some((item) => item.id === profile.id))].map((profile) => {

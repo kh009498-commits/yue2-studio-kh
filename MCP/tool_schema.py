@@ -17,6 +17,7 @@ def number(low: float, high: float, integer: bool = False, **extra: Any) -> dict
 
 SLOTS = {"type": "object", "properties": {name: {"type": "string"} for name in ("female", "male", "backing")}, "additionalProperties": False}
 GENERATE_PROPERTIES = {
+    "template_id": text(240, description="Optional stable Studio template ID for catalog filtering; metadata only, not a calmness guarantee."),
     "description": text(12000, 1, description="Compact YuE2 music style; musical directions stay separate from lyrics."),
     "title": text(120), "artist": text(160), "album": text(160), "genre": text(120),
     "lyrics": text(24000), "instrumental": {"type": "boolean"},

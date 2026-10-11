@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Literal
 
 import lyric_preferences
@@ -46,15 +47,25 @@ def writing_operation(fn):
             return fn(*args, **kwargs)
         if not _OPERATION_LOCK.acquire(blocking=False):
             raise WritingBusyError("Writing is busy. Wait for it to finish or stop it first.")
+        started = time.monotonic()
+        operation_id = uuid.uuid4().hex[:8]
         try:
             if _shutdown.is_set():
                 raise RuntimeError("Writing cancelled")
             _cancel.clear()
             _operation_local.active = True
+            log.info("Writing operation [%s] started: task=%s", operation_id, fn.__name__)
             result = fn(*args, **kwargs)
             if writing_cancelled():
                 raise RuntimeError("Writing cancelled")
+            log.info("Writing operation [%s] finished: task=%s elapsed=%.1fs",
+                     operation_id, fn.__name__, time.monotonic() - started)
             return result
+        except Exception as error:
+            outcome = "cancelled" if writing_cancelled() else "validation failed" if isinstance(error, WritingValidationError) else "failed"
+            log.warning("Writing operation [%s] %s: task=%s elapsed=%.1fs error_type=%s",
+                        operation_id, outcome, fn.__name__, time.monotonic() - started, type(error).__name__)
+            raise
         finally:
             _operation_local.active = False
             _OPERATION_LOCK.release()
@@ -1015,20 +1026,41 @@ def _complete(provider: str, model: str, key: str, system: str, user: str, *, te
     if writing_cancelled():
         raise RuntimeError("Writing cancelled")
     started = time.monotonic()
+    request_id = uuid.uuid4().hex[:8]
+    timeout = max(timeout, CLOUD_SLOW_TIMEOUT) if provider == "nvidia" else timeout
+    model = model or DEFAULT_MODELS.get(provider, "")
+    has_list = bool(lyric_preferences.load().get("avoid", "").strip())
+    avoid_state = "off" if not has_list else "on" if label in {"lyrics", "chat"} else "skip-style"
+    log.info("Writing [%s] started: action=%s provider=%s model=%s timeout=%ss avoid_list=%s",
+             request_id, label, provider, model, timeout, avoid_state)
+    done = threading.Event()
+    def report_wait():
+        while not done.wait(15):
+            log.info("Writing [%s] waiting: provider=%s model=%s elapsed=%.1fs timeout=%ss",
+                     request_id, provider, model, time.monotonic() - started, timeout)
+    progress = threading.Thread(target=report_wait, name=f"writing-log-{request_id}", daemon=True)
+    progress.start()
     try:
-        return _complete_inner(provider, model, key, system, user,
-                               temperature=temperature, effort=effort, timeout=timeout, base_url=base_url)
+        result = _complete_inner(provider, model, key, system, user,
+                                 temperature=temperature, effort=effort, timeout=timeout, base_url=base_url)
+        if writing_cancelled():
+            raise RuntimeError("Writing cancelled")
+        done.set()
+        log.info("Writing [%s] %s: provider=%s model=%s elapsed=%.1fs output_chars=%s",
+                 request_id, "completed" if result.strip() else "empty response", provider, model,
+                 time.monotonic() - started, len(result))
+        return result
+    except Exception as error:
+        done.set()
+        message = str(error).lower()
+        http = re.search(r"\bhttp\s+(\d{3})\b", message)
+        outcome = "cancelled" if writing_cancelled() else "timed out" if isinstance(error, TimeoutError) or "did not answer within" in message or "timed out" in message else f"HTTP {http.group(1)}" if http else "request failed"
+        log.warning("Writing [%s] %s: provider=%s model=%s elapsed=%.1fs error_type=%s",
+                    request_id, outcome, provider, model, time.monotonic() - started, type(error).__name__)
+        raise
     finally:
-        # Timed so a "the app froze" report can be checked against what the
-        # cloud call actually cost. Shows up in the Logs panel at INFO.
-        has_list = bool(lyric_preferences.load().get("avoid", "").strip())
-        if not has_list:
-            avoid_state = "off"
-        elif label in {"lyrics", "chat"}:
-            avoid_state = "on"
-        else:
-            avoid_state = "skip-style"
-        log.info("assist %s via %s/%s took %.1fs avoid_list=%s", label, provider, model, time.monotonic() - started, avoid_state)
+        done.set()
+        progress.join(timeout=0.2)
 
 
 CLOUD_SLOW_TIMEOUT = 150
@@ -1114,6 +1146,12 @@ def _openai_compat(provider: str, model: str, key: str, system: str, user: str, 
         "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }
+    if provider == "nvidia" and payload["model"] in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
+        # NVIDIA defaults these writers to medium reasoning; keep interactive
+        # songwriting responsive instead of spending the budget on analysis.
+        payload["reasoning_effort"] = "low"
+    if provider == "nvidia" and payload["model"] == "nvidia/nemotron-3.5-lightning-30b-a3b":
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     if think is False:
         payload["think"] = False
     if lyric_sampler:
